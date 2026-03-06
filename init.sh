@@ -12,18 +12,20 @@ echo "Project root: $PROJECT_ROOT"
 echo ""
 
 # 1. Python environment
+PYTHON_BIN="/opt/anaconda3/envs/py10/bin/python"
 echo "[1/6] Checking Python environment..."
-if [ ! -d ".venv" ]; then
-    echo "  Creating virtual environment..."
-    python3 -m venv .venv
+if [ ! -x "$PYTHON_BIN" ]; then
+    echo "  ERROR: Python not found at $PYTHON_BIN"
+    echo "  Please create the conda env: conda create -n py10 python=3.10"
+    exit 1
 fi
-source .venv/bin/activate
-echo "  Python: $(python3 --version)"
-echo "  venv: $VIRTUAL_ENV"
+export PATH="/opt/anaconda3/envs/py10/bin:$PATH"
+echo "  Python: $($PYTHON_BIN --version)"
+echo "  Using: $PYTHON_BIN"
 
 # 2. Install dependencies
 echo "[2/6] Installing Python dependencies..."
-pip install -q -r scripts/requirements.txt
+$PYTHON_BIN -m pip install -q -r scripts/requirements.txt
 
 # 3. Verify Tushare token
 echo "[3/6] Checking Tushare token..."
@@ -51,8 +53,8 @@ mkdir -p output
 
 # 6. Run basic tests
 echo "[6/6] Running verification tests..."
-python3 -m pytest tests/ -x -q --tb=short 2>&1 | tail -5
+$PYTHON_BIN -m pytest tests/ -x -q --tb=short 2>&1 | tail -5
 
 echo ""
 echo "=== Setup complete ==="
-echo "To run: python3 scripts/tushare_collector.py --code 600887.SH --output output/data_pack_market.md"
+echo "To run: python scripts/tushare_collector.py --code 600887.SH --output output/data_pack_market.md"

@@ -5,36 +5,82 @@
 ## Project Status
 - Version: v1.0 (upgrading from v0.16_alpha)
 - Architecture: Python scripts (Tushare) + LLM prompts (analysis)
-- Current phase: SCAFFOLDING COMPLETE
-- Features completed: 0/78 (harness features 1-6 done implicitly via scaffolding)
+- Current phase: WAVE 1 + WAVE 2 CORE COMPLETE
+- Features completed: 22/78
 - Last session: 2026-03-06
+- Python env: /opt/anaconda3/envs/py10/bin/python (Python 3.10.13)
+- Tests: 83 passing
 
 ## Implementation Wave Order
-1. Infrastructure (#1-#8) - scaffolding, config, CLI, fixtures, utils
-2. Tushare Core (#13-#22) - TushareClient + data sections
-3. Tushare Advanced + Phase 1B (#23-#36) - remaining sections, fallback, prompts
-4. PDF Preprocessor (#37-#47) - extraction pipeline (can parallel with Wave 2/3)
-5. Phase 2B + Phase 3 (#48-#60) - prompt updates
-6. Coordinator + Errors (#61-#70) - orchestration rewrite
-7. Integration + Packaging (#71-#78) - E2E tests, docs
+1. Infrastructure (#1-#8) - COMPLETE
+2. Tushare Core (#13-#22) - COMPLETE
+3. Tushare Advanced (#23-#30) - COMPLETE (minus #29 yfinance fallback)
+4. Phase 1B WebSearch (#31-#36) - NOT STARTED
+5. PDF Preprocessor (#37-#47) - NOT STARTED
+6. Phase 2B + Phase 3 (#48-#60) - NOT STARTED
+7. Coordinator + Errors (#61-#70) - NOT STARTED
+8. Integration + Packaging (#71-#78) - NOT STARTED
 
 ## Completed Features
-(none marked as passes=true yet -- scaffolding done but features need formal test verification)
+- #1: Project scaffolding verification ✓
+- #2: Prompt files migration verification ✓
+- #3: config.py tests (get_token, validate_stock_code) ✓
+- #4: requirements.txt + init.sh verification ✓
+- #5: tushare_collector.py CLI skeleton ✓
+- #6: pdf_preprocessor.py CLI skeleton ✓
+- #7: Test fixtures (7 mock JSON files) ✓
+- #8: format_utils.py (format_number, format_table, format_header) ✓
+- #9: check_local_pdf tests ✓
+- #11: validate_pdf tests ✓
+- #13: TushareClient class (rate_limit, _safe_call, retry) ✓
+- #14: get_basic_info (stock_basic + daily_basic) ✓
+- #15: get_market_data (52-week range) ✓
+- #16: get_income (5yr consolidated income) ✓
+- #17: get_income_parent (report_type=4) ✓
+- #18: get_balance_sheet (5yr consolidated) ✓
+- #19: get_balance_sheet_parent (report_type=4) ✓
+- #20: get_cashflow (with FCF calculation) ✓
+- #21: get_dividends (dividend history) ✓
+- #22: get_weekly_prices (10yr weekly) ✓
+- #23: get_fina_indicators (ROE, margins) ✓
+- #24: get_segments (business segments) ✓
+- #25: get_holders + get_audit ✓
+- #26: available_fields.json (field inventory) ✓
+- #27: extra-fields mode ✓
+- #28: assemble_data_pack (full assembly) ✓
+- #30: WarningsCollector class ✓
 
 ## Current Blockers
-- [ ] TUSHARE_TOKEN not configured (needed for live API tests, features #13+)
-- [ ] No test PDF available for pdf_preprocessor testing (features #37+)
-- [ ] Virtual environment not yet created (run init.sh first)
+- [ ] TUSHARE_TOKEN needed for live integration tests (#74)
+- [ ] No test PDF for pdf_preprocessor testing (#37+)
 
 ## Next Priority
-Start with Wave 1: Infrastructure features #3 (config tests), #7 (fixtures), #8 (format utils)
-Features #1-6 are largely done from scaffolding but need test verification.
+- Feature #29: yfinance fallback (try/except already in assembly, just needs yfinance import)
+- Features #31-#36: Phase 1B WebSearch prompt updates
+- Features #37-#47: PDF preprocessor implementation
+
+## Test Summary
+- tests/test_config.py: 26 tests (token, stock codes, PDF utils)
+- tests/test_format_utils.py: 21 tests (format_number, format_table, format_header)
+- tests/test_tushare_client.py: 36 tests (client, data sections, warnings)
+- Total: 83 tests, all passing
+
+## Key Files
+- scripts/config.py: get_token, validate_stock_code, check_local_pdf, validate_pdf
+- scripts/format_utils.py: format_number, format_table, format_header
+- scripts/tushare_collector.py: TushareClient (12 get_* methods), WarningsCollector, CLI
+- tests/fixtures/mock_tushare_responses/: 10 JSON fixtures
 
 ## Session Log
 ### Session 1 - 2026-03-06
-- What was done: Project scaffolding with long-running agent harness
-- Created: directory structure, init.sh, feature_list.json (78 features), CLAUDE.md
-- Created: config.py, tushare_collector.py, pdf_preprocessor.py (skeletons)
-- Copied: 8 prompt files from v0.16_alpha to prompts/
-- Git: initialized repo with initial commit
-- Next priority: Run init.sh, then implement features #3, #7, #8
+- Project scaffolding with long-running agent harness
+- Created: directory structure, init.sh, feature_list.json, CLAUDE.md
+- Git: initialized repo
+
+### Session 2 - 2026-03-06
+- Updated init.sh to use /opt/anaconda3/envs/py10/bin/python
+- Implemented Wave 1 infrastructure (features #1-#8)
+- Implemented Wave 2 Tushare core (features #13-#22)
+- Implemented Wave 3 advanced (features #23-#28, #30)
+- Created 83 tests across 3 test files, all passing
+- tushare_collector.py now has full data collection pipeline with assembly

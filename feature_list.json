@@ -31,7 +31,7 @@
         "Create output/.gitkeep",
         "Verify: ls confirms all directories exist"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 2,
@@ -43,7 +43,7 @@
         "Copy references/ directory to prompts/references/",
         "Verify: all 8 prompt files exist in prompts/"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 3,
@@ -55,7 +55,7 @@
         "Write test_config.py: test token loading, test stock code validation",
         "Run pytest tests/test_config.py -- all pass"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 4,
@@ -67,7 +67,7 @@
         "chmod +x init.sh",
         "Run bash init.sh -- completes without errors"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 5,
@@ -79,7 +79,7 @@
         "Run with --dry-run -- prints parsed args correctly",
         "Run with no args -- shows help with error"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 6,
@@ -90,7 +90,7 @@
         "Arguments: --pdf (required), --output, --verbose, --dry-run",
         "Run with --dry-run -- prints args correctly"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 7,
@@ -102,7 +102,7 @@
         "Create conftest.py with fixture that loads mock data by endpoint name",
         "Verify: pytest --collect-only shows fixtures"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 8,
@@ -115,7 +115,7 @@
         "Write tests: test format_number(96886000000) == '96,886.00'",
         "Run pytest -- all format tests pass"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 9,
@@ -127,7 +127,7 @@
         "Write test: create temp file matching pattern, verify detection",
         "Write test: verify returns None when no match"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 10,
@@ -150,7 +150,7 @@
         "Write tests with fake PDF header and empty file",
         "Run pytest -- all pass"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 12,
@@ -176,7 +176,7 @@
         "Add _safe_call() with retry logic (max 3 retries)",
         "Write test with mock: verify rate limiting and retry"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 14,
@@ -188,7 +188,7 @@
         "Format as section 1 markdown table",
         "Write test with mock data: verify correct field extraction"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 15,
@@ -200,7 +200,7 @@
         "Format as section 2 markdown",
         "Write test: verify 52-week range calculation"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 16,
@@ -213,7 +213,7 @@
         "All amounts / 1e6, formatted with commas",
         "Write test: verify amount conversion and 5-year column ordering"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 17,
@@ -225,7 +225,7 @@
         "Format as section 3P markdown",
         "Write test: verify report_type=4 is passed to API"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 18,
@@ -237,7 +237,7 @@
         "Amounts / 1e6",
         "Write test: verify interest-bearing debt and contract_liab fields"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 19,
@@ -249,7 +249,7 @@
         "Format as section 4P markdown",
         "Write test: verify parent-specific fields"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 20,
@@ -261,7 +261,7 @@
         "Calculate FCF = OCF - |Capex|",
         "Write test: verify FCF calculation"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 21,
@@ -273,7 +273,7 @@
         "Calculate total dividend = cash_div_tax * total_share",
         "Write test: verify DPS extraction and total calculation"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 22,
@@ -286,7 +286,7 @@
         "Format section 11 + Appendix A",
         "Write test: verify 10-year range and annual aggregation"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 23,
@@ -298,7 +298,7 @@
         "Format as section 12 markdown (5 years)",
         "Write test: verify ROE and margin fields"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 24,
@@ -310,7 +310,7 @@
         "Handle empty data gracefully",
         "Write test: verify segment breakdown"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 25,
@@ -322,7 +322,7 @@
         "Extract audit opinion type",
         "Write tests for holder and audit parsing"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 26,
@@ -333,7 +333,7 @@
         "Write to available_fields.json: {endpoint: [fields]}",
         "Write test: verify JSON structure"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 27,
@@ -344,7 +344,7 @@
         "Fetch specified fields and output to _extra.md",
         "Write test: verify field parsing logic"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 28,
@@ -356,7 +356,7 @@
         "Include all sections, leave placeholders for Agent-filled ones",
         "Write test: verify all section headers present"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 29,
@@ -380,7 +380,7 @@
         "Format as section 13 in data_pack_market.md",
         "Write test: inject anomalous data, verify warning"
       ],
-      "passes": false
+      "passes": true
     },
     {
       "id": 31,
