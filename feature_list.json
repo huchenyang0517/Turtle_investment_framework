@@ -1,0 +1,938 @@
+{
+  "_meta": {
+    "version": "1.0",
+    "project": "Turtle Investment Framework v1.0",
+    "description": "Comprehensive feature list for incremental implementation. Each feature should be implementable and testable in a single Claude Code session. CRITICAL: It is unacceptable to remove or edit tests because this could lead to missing or buggy functionality. Only mark a feature as passes=true after its tests pass.",
+    "total_features": 78,
+    "categories": [
+      "infrastructure",
+      "phase0_pdf_download",
+      "phase1a_tushare",
+      "phase1b_websearch",
+      "phase2a_pdf_preprocess",
+      "phase2b_agent_extract",
+      "phase3_analysis",
+      "coordinator",
+      "error_handling",
+      "output_format",
+      "integration",
+      "packaging"
+    ]
+  },
+  "features": [
+    {
+      "id": 1,
+      "category": "infrastructure",
+      "description": "Project scaffolding: create directory structure, __init__.py files, .gitignore",
+      "steps": [
+        "Create scripts/, prompts/, tests/, tests/fixtures/, output/ directories",
+        "Create __init__.py in scripts/ and tests/",
+        "Create .gitignore with Python, .venv, output/, *.pdf, .env entries",
+        "Create output/.gitkeep",
+        "Verify: ls confirms all directories exist"
+      ],
+      "passes": false
+    },
+    {
+      "id": 2,
+      "category": "infrastructure",
+      "description": "Move v0.16_alpha prompt files into prompts/ directory",
+      "steps": [
+        "Copy coordinator.md to prompts/coordinator.md",
+        "Copy phase1-3 files to prompts/",
+        "Copy references/ directory to prompts/references/",
+        "Verify: all 8 prompt files exist in prompts/"
+      ],
+      "passes": false
+    },
+    {
+      "id": 3,
+      "category": "infrastructure",
+      "description": "config.py: Token management with env var loading and stock code validation",
+      "steps": [
+        "Create scripts/config.py with get_token() and validate_stock_code()",
+        "Support A-share (XXXXXX.SH/.SZ) and HK (XXXXX.HK) formats",
+        "Write test_config.py: test token loading, test stock code validation",
+        "Run pytest tests/test_config.py -- all pass"
+      ],
+      "passes": false
+    },
+    {
+      "id": 4,
+      "category": "infrastructure",
+      "description": "requirements.txt and init.sh setup script",
+      "steps": [
+        "Create scripts/requirements.txt with tushare, pandas, pdfplumber, requests, pytest",
+        "Create init.sh with venv setup, pip install, token check, test run",
+        "chmod +x init.sh",
+        "Run bash init.sh -- completes without errors"
+      ],
+      "passes": false
+    },
+    {
+      "id": 5,
+      "category": "infrastructure",
+      "description": "CLI argument parser for tushare_collector.py (skeleton)",
+      "steps": [
+        "Create scripts/tushare_collector.py with argparse skeleton",
+        "Arguments: --code (required), --token, --output, --extra-fields, --dry-run",
+        "Run with --dry-run -- prints parsed args correctly",
+        "Run with no args -- shows help with error"
+      ],
+      "passes": false
+    },
+    {
+      "id": 6,
+      "category": "infrastructure",
+      "description": "CLI argument parser for pdf_preprocessor.py (skeleton)",
+      "steps": [
+        "Create scripts/pdf_preprocessor.py with argparse skeleton",
+        "Arguments: --pdf (required), --output, --verbose, --dry-run",
+        "Run with --dry-run -- prints args correctly"
+      ],
+      "passes": false
+    },
+    {
+      "id": 7,
+      "category": "infrastructure",
+      "description": "Test fixtures: create mock Tushare API response files",
+      "steps": [
+        "Create tests/fixtures/mock_tushare_responses/ directory",
+        "Create mock JSON files: stock_basic, daily_basic, income, balancesheet, cashflow, dividend, weekly for 600887",
+        "Create conftest.py with fixture that loads mock data by endpoint name",
+        "Verify: pytest --collect-only shows fixtures"
+      ],
+      "passes": false
+    },
+    {
+      "id": 8,
+      "category": "infrastructure",
+      "description": "Markdown output utility: format_number(), format_table(), format_header()",
+      "steps": [
+        "Create helper functions for markdown output formatting",
+        "format_number(): divide by 1e6, format with commas to 2 decimals",
+        "format_table(): generate markdown table with right-alignment for numbers",
+        "Write tests: test format_number(96886000000) == '96,886.00'",
+        "Run pytest -- all format tests pass"
+      ],
+      "passes": false
+    },
+    {
+      "id": 9,
+      "category": "phase0_pdf_download",
+      "description": "Check if PDF already exists locally before download",
+      "steps": [
+        "Add check_local_pdf(stock_code, year, search_dir) function",
+        "Search patterns: {code}_{year}_*.pdf, *{code}*{year}*年报*.pdf",
+        "Write test: create temp file matching pattern, verify detection",
+        "Write test: verify returns None when no match"
+      ],
+      "passes": false
+    },
+    {
+      "id": 10,
+      "category": "phase0_pdf_download",
+      "description": "Document snowball-report-downloader invocation in coordinator prompt",
+      "steps": [
+        "Update prompts/coordinator.md Phase 0 section with download command syntax",
+        "Add fallback instruction: if download fails, set pdf_available=false",
+        "Verify: coordinator.md contains Phase 0 block"
+      ],
+      "passes": false
+    },
+    {
+      "id": 11,
+      "category": "phase0_pdf_download",
+      "description": "PDF validation after download (magic bytes, size check)",
+      "steps": [
+        "Add validate_pdf(filepath) function to config.py",
+        "Check %PDF magic bytes and file size > 100KB",
+        "Write tests with fake PDF header and empty file",
+        "Run pytest -- all pass"
+      ],
+      "passes": false
+    },
+    {
+      "id": 12,
+      "category": "phase0_pdf_download",
+      "description": "Update coordinator to handle 3 PDF scenarios (exists/download/skip)",
+      "steps": [
+        "Update prompts/coordinator.md with decision tree",
+        "Scenario 1: User uploaded PDF -> use directly",
+        "Scenario 2: Auto-download -> validate -> use",
+        "Scenario 3: Download failed -> set no-PDF mode",
+        "Add AskUserQuestion template for PDF choice"
+      ],
+      "passes": false
+    },
+    {
+      "id": 13,
+      "category": "phase1a_tushare",
+      "description": "TushareClient class: initialize connection with token and rate limiting",
+      "steps": [
+        "Add TushareClient class to tushare_collector.py",
+        "Constructor: set tushare token, create pro_api()",
+        "Add rate_limit decorator: time.sleep(0.3) between calls",
+        "Add _safe_call() with retry logic (max 3 retries)",
+        "Write test with mock: verify rate limiting and retry"
+      ],
+      "passes": false
+    },
+    {
+      "id": 14,
+      "category": "phase1a_tushare",
+      "description": "Section 1: Basic company info (stock_basic + daily_basic endpoints)",
+      "steps": [
+        "Add get_basic_info(ts_code) method",
+        "Extract name, industry, exchange, list_date, pe_ttm, pb, total_mv, circ_mv",
+        "Format as section 1 markdown table",
+        "Write test with mock data: verify correct field extraction"
+      ],
+      "passes": false
+    },
+    {
+      "id": 15,
+      "category": "phase1a_tushare",
+      "description": "Section 2: Market data (current price, 52-week range)",
+      "steps": [
+        "Add get_market_data(ts_code) method",
+        "Get latest close price and calculate 52-week high/low",
+        "Format as section 2 markdown",
+        "Write test: verify 52-week range calculation"
+      ],
+      "passes": false
+    },
+    {
+      "id": 16,
+      "category": "phase1a_tushare",
+      "description": "Section 3: Five-year consolidated income statement (report_type=1)",
+      "steps": [
+        "Add get_income(ts_code, report_type=1) method",
+        "Fetch 5 years of annual income data",
+        "Extract: revenue, oper_cost, n_income_attr_p, minority_gain, dt_eps",
+        "All amounts / 1e6, formatted with commas",
+        "Write test: verify amount conversion and 5-year column ordering"
+      ],
+      "passes": false
+    },
+    {
+      "id": 17,
+      "category": "phase1a_tushare",
+      "description": "Section 3P: Five-year parent-company income statement (report_type=4)",
+      "steps": [
+        "Add get_income_parent(ts_code) using report_type=4",
+        "Extract parent-only fields: revenue, n_income, oper_profit",
+        "Format as section 3P markdown",
+        "Write test: verify report_type=4 is passed to API"
+      ],
+      "passes": false
+    },
+    {
+      "id": 18,
+      "category": "phase1a_tushare",
+      "description": "Section 4: Five-year consolidated balance sheet (report_type=1)",
+      "steps": [
+        "Add get_balance_sheet(ts_code, report_type=1) method",
+        "Extract: total_assets, total_liab, money_cap, accounts_receiv, inventories, goodwill, contract_liab, adv_receipts, lt_borr, st_borr",
+        "Amounts / 1e6",
+        "Write test: verify interest-bearing debt and contract_liab fields"
+      ],
+      "passes": false
+    },
+    {
+      "id": 19,
+      "category": "phase1a_tushare",
+      "description": "Section 4P: Five-year parent-company balance sheet (report_type=4)",
+      "steps": [
+        "Add get_balance_sheet_parent(ts_code) using report_type=4",
+        "Extract: money_cap, lt_eqt_invest, st_borr, lt_borr",
+        "Format as section 4P markdown",
+        "Write test: verify parent-specific fields"
+      ],
+      "passes": false
+    },
+    {
+      "id": 20,
+      "category": "phase1a_tushare",
+      "description": "Section 5: Five-year cash flow statement",
+      "steps": [
+        "Add get_cashflow(ts_code) method",
+        "Extract: n_cashflow_act (OCF), n_cashflow_inv_act, n_cashflow_fnc_act, c_paid_invest (capex), prov_depr_assets (D&A)",
+        "Calculate FCF = OCF - |Capex|",
+        "Write test: verify FCF calculation"
+      ],
+      "passes": false
+    },
+    {
+      "id": 21,
+      "category": "phase1a_tushare",
+      "description": "Section 6: Dividend history",
+      "steps": [
+        "Add get_dividends(ts_code) method",
+        "Extract: cash_div_tax, stk_div, record_date, ex_date per year",
+        "Calculate total dividend = cash_div_tax * total_share",
+        "Write test: verify DPS extraction and total calculation"
+      ],
+      "passes": false
+    },
+    {
+      "id": 22,
+      "category": "phase1a_tushare",
+      "description": "Section 11 + Appendix A: 10-year weekly price history",
+      "steps": [
+        "Add get_weekly_prices(ts_code) method",
+        "Fetch 10 years of weekly OHLCV data",
+        "Calculate 10yr high/low with dates, annual summary",
+        "Format section 11 + Appendix A",
+        "Write test: verify 10-year range and annual aggregation"
+      ],
+      "passes": false
+    },
+    {
+      "id": 23,
+      "category": "phase1a_tushare",
+      "description": "Section 12: Key financial indicators (fina_indicator endpoint)",
+      "steps": [
+        "Add get_fina_indicators(ts_code) method",
+        "Extract: roe, grossprofit_margin, netprofit_margin, rd_exp_to_revenue",
+        "Format as section 12 markdown (5 years)",
+        "Write test: verify ROE and margin fields"
+      ],
+      "passes": false
+    },
+    {
+      "id": 24,
+      "category": "phase1a_tushare",
+      "description": "Section 9: Business segment data (fina_mainbz_ts endpoint)",
+      "steps": [
+        "Add get_segments(ts_code) method",
+        "Extract revenue and profit by segment",
+        "Handle empty data gracefully",
+        "Write test: verify segment breakdown"
+      ],
+      "passes": false
+    },
+    {
+      "id": 25,
+      "category": "phase1a_tushare",
+      "description": "Section 7 (partial): Top 10 holders + audit info",
+      "steps": [
+        "Add get_holders(ts_code) and get_audit(ts_code) methods",
+        "Extract top 10 shareholder names and percentages",
+        "Extract audit opinion type",
+        "Write tests for holder and audit parsing"
+      ],
+      "passes": false
+    },
+    {
+      "id": 26,
+      "category": "phase1a_tushare",
+      "description": "available_fields.json: Generate field inventory from all endpoints",
+      "steps": [
+        "After calling each endpoint, capture all column names",
+        "Write to available_fields.json: {endpoint: [fields]}",
+        "Write test: verify JSON structure"
+      ],
+      "passes": false
+    },
+    {
+      "id": 27,
+      "category": "phase1a_tushare",
+      "description": "Extra-fields mode: --extra-fields for on-demand field fetching",
+      "steps": [
+        "Parse 'endpoint.field_name' format",
+        "Fetch specified fields and output to _extra.md",
+        "Write test: verify field parsing logic"
+      ],
+      "passes": false
+    },
+    {
+      "id": 28,
+      "category": "phase1a_tushare",
+      "description": "Full data_pack_market.md assembly: combine all sections",
+      "steps": [
+        "Add assemble_data_pack() combining all get_* methods",
+        "Write complete file with header (stock code, time, completeness)",
+        "Include all sections, leave placeholders for Agent-filled ones",
+        "Write test: verify all section headers present"
+      ],
+      "passes": false
+    },
+    {
+      "id": 29,
+      "category": "phase1a_tushare",
+      "description": "yfinance fallback: degrade gracefully when Tushare endpoint fails",
+      "steps": [
+        "Wrap each call in try/except",
+        "On failure, attempt yfinance equivalent",
+        "Tag fallback data with '来源: yfinance (降级)'",
+        "Write test: simulate failure, verify fallback triggers"
+      ],
+      "passes": false
+    },
+    {
+      "id": 30,
+      "category": "phase1a_tushare",
+      "description": "Warnings generation: auto-detect anomalies during collection",
+      "steps": [
+        "Add WarningsCollector class",
+        "Detect: data missing, >300% YoY change, audit risk, governance risk",
+        "Format as section 13 in data_pack_market.md",
+        "Write test: inject anomalous data, verify warning"
+      ],
+      "passes": false
+    },
+    {
+      "id": 31,
+      "category": "phase1b_websearch",
+      "description": "Update Phase 1 prompt: remove script-covered sections, keep Agent tasks",
+      "steps": [
+        "Edit prompts/phase1_数据采集.md to remove sections 1-6, 9, 11, 12",
+        "Keep sections 7, 8, 10 (management, industry, MD&A)",
+        "Add instruction: read data_pack_market.md first, fill missing sections",
+        "Verify: prompt contains only Agent-required sections"
+      ],
+      "passes": false
+    },
+    {
+      "id": 32,
+      "category": "phase1b_websearch",
+      "description": "Section 5 (Rf): WebSearch for risk-free rate",
+      "steps": [
+        "Add search queries for A-share Rf: '中国十年期国债收益率 最新'",
+        "Add fallback query: 'China 10 year government bond yield'",
+        "Verify: prompt contains Rf search instructions"
+      ],
+      "passes": false
+    },
+    {
+      "id": 33,
+      "category": "phase1b_websearch",
+      "description": "Section 7 (rest): Management and governance WebSearch queries",
+      "steps": [
+        "Note top10_holders and audit come from script",
+        "Keep WebSearch for: CEO/CFO tenure, fraud, pledge/reduction, buyback",
+        "Add search query templates with {company_name} placeholders"
+      ],
+      "passes": false
+    },
+    {
+      "id": 34,
+      "category": "phase1b_websearch",
+      "description": "Section 8: Industry and competition WebSearch queries",
+      "steps": [
+        "Update prompt with search query templates",
+        "Include conditional 8.4 (raw milk prices for dairy)",
+        "Add trigger condition based on industry classification"
+      ],
+      "passes": false
+    },
+    {
+      "id": 35,
+      "category": "phase1b_websearch",
+      "description": "Section 10: MD&A summary WebSearch queries",
+      "steps": [
+        "Update with bilingual search queries",
+        "4 targets: operating review, guidance, capital allocation, risk factors",
+        "Each limited to 200 chars of original text"
+      ],
+      "passes": false
+    },
+    {
+      "id": 36,
+      "category": "phase1b_websearch",
+      "description": "Section 13: Agent-generated warnings appended to script warnings",
+      "steps": [
+        "Instruct Agent to READ existing section 13",
+        "Append new warnings from WebSearch findings",
+        "Do NOT overwrite script-generated warnings"
+      ],
+      "passes": false
+    },
+    {
+      "id": 37,
+      "category": "phase2a_pdf_preprocess",
+      "description": "PDF text extraction: pdfplumber page-by-page with page index",
+      "steps": [
+        "Add extract_all_pages(pdf_path) function",
+        "Return list of (page_number, text) tuples",
+        "Handle encrypted and scan-only PDFs",
+        "Write test: verify page count and error handling"
+      ],
+      "passes": false
+    },
+    {
+      "id": 38,
+      "category": "phase2a_pdf_preprocess",
+      "description": "Keyword library: SECTION_KEYWORDS for 5 target sections",
+      "steps": [
+        "Define SECTION_KEYWORDS dict for P2/P3/P4/P6/P13",
+        "Include simplified Chinese, traditional Chinese, and English keywords",
+        "Write test: verify all 5 sections have >= 3 keywords each"
+      ],
+      "passes": false
+    },
+    {
+      "id": 39,
+      "category": "phase2a_pdf_preprocess",
+      "description": "Keyword matching: locate sections by scanning all pages",
+      "steps": [
+        "Add find_section_pages(pages_text, section_keywords) function",
+        "Prefer matches in second half of document (financial statements)",
+        "Return dict: {section_id: [matched_page_numbers]}",
+        "Write test: mock pages with keywords, verify detection"
+      ],
+      "passes": false
+    },
+    {
+      "id": 40,
+      "category": "phase2a_pdf_preprocess",
+      "description": "Context extraction: target page +/- 1 page buffer, truncate to 2000 chars",
+      "steps": [
+        "Add extract_section_context() function",
+        "Combine (page-1, page, page+1) text",
+        "Truncate at sentence boundary",
+        "Write test: verify 3-page combination and truncation"
+      ],
+      "passes": false
+    },
+    {
+      "id": 41,
+      "category": "phase2a_pdf_preprocess",
+      "description": "JSON output: write pdf_sections.json with 5 sections + metadata",
+      "steps": [
+        "Add write_output() function",
+        "JSON: {P2: text|null, P3: ..., metadata: {pdf_path, total_pages, time, count}}",
+        "Write test: verify JSON is valid and null for unfound sections"
+      ],
+      "passes": false
+    },
+    {
+      "id": 42,
+      "category": "phase2a_pdf_preprocess",
+      "description": "Main pipeline: chain extraction -> matching -> context -> output",
+      "steps": [
+        "Implement main() chaining all steps",
+        "Add verbose mode with progress messages",
+        "Handle errors: PDF not found, too small, no sections found",
+        "Write test: end-to-end with mock pipeline"
+      ],
+      "passes": false
+    },
+    {
+      "id": 43,
+      "category": "phase2a_pdf_preprocess",
+      "description": "Traditional Chinese keyword support for HK annual reports",
+      "steps": [
+        "Add traditional Chinese variants to SECTION_KEYWORDS",
+        "Write test: verify traditional Chinese keywords match"
+      ],
+      "passes": false
+    },
+    {
+      "id": 44,
+      "category": "phase2a_pdf_preprocess",
+      "description": "PyMuPDF fallback for garbled pdfplumber extraction",
+      "steps": [
+        "Add fallback_extract_pymupdf() function",
+        "Detect garbled text: >30% non-CJK/ASCII characters",
+        "Add pymupdf to requirements as optional",
+        "Write test: verify garbled text detection heuristic"
+      ],
+      "passes": false
+    },
+    {
+      "id": 45,
+      "category": "phase2a_pdf_preprocess",
+      "description": "Table-aware extraction: preserve table structures as markdown",
+      "steps": [
+        "Use pdfplumber extract_tables() for pages with tables",
+        "Convert to markdown format within extracted text",
+        "Write test: verify table detection"
+      ],
+      "passes": false
+    },
+    {
+      "id": 46,
+      "category": "phase2a_pdf_preprocess",
+      "description": "Section priority scoring: prefer financial notes over table of contents",
+      "steps": [
+        "Score by heading context, page position (last 30%), penalize TOC",
+        "Write test: verify scoring ranks notes > TOC"
+      ],
+      "passes": false
+    },
+    {
+      "id": 47,
+      "category": "phase2a_pdf_preprocess",
+      "description": "End-to-end validation with real annual report PDF",
+      "steps": [
+        "Run pdf_preprocessor.py on a real annual report",
+        "Verify: at least 4/5 sections found",
+        "Verify: extracted text contains financial terms",
+        "Record results in claude-progress.txt"
+      ],
+      "passes": false
+    },
+    {
+      "id": 48,
+      "category": "phase2b_agent_extract",
+      "description": "Update Phase 2 prompt: reduce 18 items to 5 (P2/P3/P4/P6/P13)",
+      "steps": [
+        "Edit prompts/phase2_PDF解析.md to focus on 5 items",
+        "Input: pdf_sections.json (not raw PDF)",
+        "Remove P1, P5, P7-P18",
+        "Verify: prompt references pdf_sections.json"
+      ],
+      "passes": false
+    },
+    {
+      "id": 49,
+      "category": "phase2b_agent_extract",
+      "description": "Phase 2B output format: data_pack_report.md with 5 sections",
+      "steps": [
+        "Define output template in Phase 2 prompt",
+        "Each section: header, table, unit annotation",
+        "Add null-handling for missing sections"
+      ],
+      "passes": false
+    },
+    {
+      "id": 50,
+      "category": "phase2b_agent_extract",
+      "description": "P2 restricted cash extraction template",
+      "steps": [
+        "Define output: | Category | Amount (millions) | Notes |",
+        "Include total and percentage of total cash",
+        "Verify: matches Phase 3 expected input"
+      ],
+      "passes": false
+    },
+    {
+      "id": 51,
+      "category": "phase2b_agent_extract",
+      "description": "P3 AR aging extraction template",
+      "steps": [
+        "Define output: | Aging Bucket | Amount | Percentage |",
+        "Include bad debt provision and related party receivables %",
+        "Verify: matches Factor 1B module 2 and Factor 3 step 2 input"
+      ],
+      "passes": false
+    },
+    {
+      "id": 52,
+      "category": "phase2b_agent_extract",
+      "description": "P4/P6/P13 extraction templates",
+      "steps": [
+        "P4: top 5 related party transactions table",
+        "P6: guarantees + litigation + capital commitments tables",
+        "P13: non-recurring items by category",
+        "Verify: all match Phase 3 factor reference requirements"
+      ],
+      "passes": false
+    },
+    {
+      "id": 53,
+      "category": "phase3_analysis",
+      "description": "Update Phase 3 prompt for unified units (millions RMB)",
+      "steps": [
+        "Edit prompts/phase3_分析与报告.md",
+        "Update unit references: all amounts now in 百万元",
+        "Update data source: Tushare Pro instead of yfinance",
+        "Add: read available_fields.json if more data needed"
+      ],
+      "passes": false
+    },
+    {
+      "id": 54,
+      "category": "phase3_analysis",
+      "description": "Update Factor 1: parent company data from sections 3P/4P",
+      "steps": [
+        "Edit factor1 reference: module 9 uses 3P/4P directly",
+        "Update degradation path if 3P/4P empty",
+        "Verify: factor1 reference updated"
+      ],
+      "passes": false
+    },
+    {
+      "id": 55,
+      "category": "phase3_analysis",
+      "description": "Update Factor 2: payout ratio from Tushare dividend data",
+      "steps": [
+        "Update factor2: payout = section 6 dividend / section 3 net income",
+        "Both in RMB, no cross-currency issue",
+        "Verify: factor2 references correct data_pack sections"
+      ],
+      "passes": false
+    },
+    {
+      "id": 56,
+      "category": "phase3_analysis",
+      "description": "Update Factor 3: contract liability from section 4",
+      "steps": [
+        "Update factor3 step 1: contract_liab and adv_receipts from section 4",
+        "No longer need PDF extraction for these",
+        "Verify: factor3 step 1 updated"
+      ],
+      "passes": false
+    },
+    {
+      "id": 57,
+      "category": "phase3_analysis",
+      "description": "Update Factor analysis: section 12 provides pre-computed ratios",
+      "steps": [
+        "Factor 1B module 0 references section 12 for ROE, gross margin, net margin",
+        "Cross-validate computed vs pre-computed ratios",
+        "Verify: module 0 references section 12"
+      ],
+      "passes": false
+    },
+    {
+      "id": 58,
+      "category": "phase3_analysis",
+      "description": "Update all factors: data_pack_report.md now has only 5 items",
+      "steps": [
+        "Update all factor refs to reference only P2/P3/P4/P6/P13",
+        "Remove references to P1, P5, P7-P18",
+        "Verify: no dangling P-item references"
+      ],
+      "passes": false
+    },
+    {
+      "id": 59,
+      "category": "phase3_analysis",
+      "description": "Checkpoint mechanism with new file structure",
+      "steps": [
+        "Verify checkpoint write paths reference output/ directory",
+        "Each factor appends to {company}_{code}_分析报告.md",
+        "Ensure progressive disclosure works: load refs from prompts/references/"
+      ],
+      "passes": false
+    },
+    {
+      "id": 60,
+      "category": "phase3_analysis",
+      "description": "Warnings consumption: handle combined script + agent warnings",
+      "steps": [
+        "Section 13 has script-generated (typed) and agent-generated (free-form) warnings",
+        "Update Phase 3 step 1 to parse both formats",
+        "Verify: phase3 handles mixed warning formats"
+      ],
+      "passes": false
+    },
+    {
+      "id": 61,
+      "category": "coordinator",
+      "description": "Rewrite coordinator: Phase 0->1A->1B->2A->2B->3 flow",
+      "steps": [
+        "Rewrite prompts/coordinator.md execution flow",
+        "Phase 1A: run tushare_collector.py (Bash)",
+        "Phase 1B: launch Agent for WebSearch",
+        "Phase 2A: run pdf_preprocessor.py (Bash, if PDF available)",
+        "Phase 2B: launch Agent for extraction (if pdf_sections.json has content)",
+        "Phase 3: launch Agent for analysis"
+      ],
+      "passes": false
+    },
+    {
+      "id": 62,
+      "category": "coordinator",
+      "description": "Coordinator: exact Bash commands for Python scripts",
+      "steps": [
+        "Add: python3 scripts/tushare_collector.py --code {ts_code} --output output/data_pack_market.md",
+        "Add: python3 scripts/pdf_preprocessor.py --pdf {pdf_path} --output output/pdf_sections.json",
+        "Add error checking: verify output files exist after each run"
+      ],
+      "passes": false
+    },
+    {
+      "id": 63,
+      "category": "coordinator",
+      "description": "Coordinator: AskUserQuestion templates for all interaction points",
+      "steps": [
+        "Template 1: holding channel (HK stocks)",
+        "Template 2: multi-listed market selection",
+        "Template 3: PDF handling (download/skip/upload)",
+        "Template 4: ambiguous company name resolution"
+      ],
+      "passes": false
+    },
+    {
+      "id": 64,
+      "category": "coordinator",
+      "description": "Coordinator: no-PDF mode (graceful degradation)",
+      "steps": [
+        "Skip Phase 2A and 2B entirely when pdf_available=false",
+        "Phase 3 uses data_pack_market.md only",
+        "Use degradation paths for P2/P3/P4/P6/P13 dependent factors",
+        "Estimated precision: ~85%"
+      ],
+      "passes": false
+    },
+    {
+      "id": 65,
+      "category": "coordinator",
+      "description": "Coordinator: file path conventions and workspace management",
+      "steps": [
+        "Define all paths relative to project root",
+        "Output: output/, prompts: prompts/, references: prompts/references/",
+        "Verify: all paths in coordinator are consistent"
+      ],
+      "passes": false
+    },
+    {
+      "id": 66,
+      "category": "coordinator",
+      "description": "Claude Code slash command: .claude/commands/turtle-analysis.md",
+      "steps": [
+        "Create .claude/commands/turtle-analysis.md",
+        "Accept argument: stock code or company name",
+        "Trigger full pipeline via coordinator",
+        "Include usage examples"
+      ],
+      "passes": false
+    },
+    {
+      "id": 67,
+      "category": "error_handling",
+      "description": "Tushare rate limiting and permission errors",
+      "steps": [
+        "Handle 'you do not have permission' error gracefully",
+        "Skip endpoint and log warning with severity",
+        "Handle HTTP 429 with exponential backoff",
+        "Write test: simulate permission error and rate limit"
+      ],
+      "passes": false
+    },
+    {
+      "id": 68,
+      "category": "error_handling",
+      "description": "PDF processing error handling",
+      "steps": [
+        "Handle: PDF not found, encrypted, too small, no sections found",
+        "Return clear error messages for each case",
+        "Write tests for each error scenario"
+      ],
+      "passes": false
+    },
+    {
+      "id": 69,
+      "category": "error_handling",
+      "description": "Data validation: cross-check financial statement consistency",
+      "steps": [
+        "Add validate_financials() function",
+        "Check: total_assets ~= total_liab + equity (1% tolerance)",
+        "Check: revenue and net income non-zero",
+        "Generate warnings for failed checks"
+      ],
+      "passes": false
+    },
+    {
+      "id": 70,
+      "category": "error_handling",
+      "description": "Hong Kong stock code handling and currency annotation",
+      "steps": [
+        "Detect HK codes: 5-digit or XXXXX.HK format",
+        "Convert to Tushare format: 00001.HK",
+        "Annotate outputs with HKD currency",
+        "Write tests for code conversion and currency annotation"
+      ],
+      "passes": false
+    },
+    {
+      "id": 71,
+      "category": "output_format",
+      "description": "data_pack_market.md schema validation test",
+      "steps": [
+        "Create test_output_format.py",
+        "Verify: all section headers ## 1. through ## 13. present",
+        "Verify: tables have correct columns",
+        "Verify: amounts use comma-separated format"
+      ],
+      "passes": false
+    },
+    {
+      "id": 72,
+      "category": "output_format",
+      "description": "pdf_sections.json schema validation test",
+      "steps": [
+        "Validate: required keys P2, P3, P4, P6, P13, metadata",
+        "Each value: string or null",
+        "Metadata: pdf_path, total_pages, extraction_time, sections_found"
+      ],
+      "passes": false
+    },
+    {
+      "id": 73,
+      "category": "output_format",
+      "description": "data_pack_report.md output validation",
+      "steps": [
+        "Verify: header with PDF source, fiscal year, page count",
+        "Verify: each P-section has content or warning marker",
+        "Verify: amounts use consistent unit (百万元)"
+      ],
+      "passes": false
+    },
+    {
+      "id": 74,
+      "category": "integration",
+      "description": "End-to-end: tushare_collector.py with live API (600887)",
+      "steps": [
+        "Run: python3 scripts/tushare_collector.py --code 600887.SH",
+        "Verify: output >5KB, contains 5 years income data",
+        "Verify: contains balance sheet with contract_liab",
+        "Record timing in claude-progress.txt",
+        "NOTE: requires TUSHARE_TOKEN"
+      ],
+      "passes": false
+    },
+    {
+      "id": 75,
+      "category": "integration",
+      "description": "End-to-end: pdf_preprocessor.py with real annual report",
+      "steps": [
+        "Run on a real 600887 annual report PDF",
+        "Verify: at least 4/5 sections non-null",
+        "Verify: extracted text contains Chinese financial terms",
+        "Record accuracy in claude-progress.txt"
+      ],
+      "passes": false
+    },
+    {
+      "id": 76,
+      "category": "integration",
+      "description": "End-to-end: full pipeline (Phase 0->1->2->3) on 600887",
+      "steps": [
+        "Execute full pipeline via coordinator",
+        "Verify: data_pack_market.md, pdf_sections.json, analysis report generated",
+        "Verify: report has all 4 factor scores",
+        "Record timing in claude-progress.txt"
+      ],
+      "passes": false
+    },
+    {
+      "id": 77,
+      "category": "packaging",
+      "description": "README.md: project documentation",
+      "steps": [
+        "Write: overview, prerequisites, installation, usage",
+        "Include: architecture diagram, phase flow",
+        "Include: environment setup (TUSHARE_TOKEN), example commands",
+        "Include: troubleshooting section"
+      ],
+      "passes": false
+    },
+    {
+      "id": 78,
+      "category": "packaging",
+      "description": "Cowork plugin structure: plugin.json and SKILL.md",
+      "steps": [
+        "Create .claude-plugin/plugin.json",
+        "Create skills/turtle-analysis/SKILL.md",
+        "Reference prompts/coordinator.md as entry point",
+        "Declare dependency on snowball-report-downloader"
+      ],
+      "passes": false
+    }
+  ]
+}

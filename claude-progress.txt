@@ -1,0 +1,40 @@
+# Turtle Investment Framework - Progress Log
+# Updated by Claude Code at the end of each session
+# Read this file at the start of every new session
+
+## Project Status
+- Version: v1.0 (upgrading from v0.16_alpha)
+- Architecture: Python scripts (Tushare) + LLM prompts (analysis)
+- Current phase: SCAFFOLDING COMPLETE
+- Features completed: 0/78 (harness features 1-6 done implicitly via scaffolding)
+- Last session: 2026-03-06
+
+## Implementation Wave Order
+1. Infrastructure (#1-#8) - scaffolding, config, CLI, fixtures, utils
+2. Tushare Core (#13-#22) - TushareClient + data sections
+3. Tushare Advanced + Phase 1B (#23-#36) - remaining sections, fallback, prompts
+4. PDF Preprocessor (#37-#47) - extraction pipeline (can parallel with Wave 2/3)
+5. Phase 2B + Phase 3 (#48-#60) - prompt updates
+6. Coordinator + Errors (#61-#70) - orchestration rewrite
+7. Integration + Packaging (#71-#78) - E2E tests, docs
+
+## Completed Features
+(none marked as passes=true yet -- scaffolding done but features need formal test verification)
+
+## Current Blockers
+- [ ] TUSHARE_TOKEN not configured (needed for live API tests, features #13+)
+- [ ] No test PDF available for pdf_preprocessor testing (features #37+)
+- [ ] Virtual environment not yet created (run init.sh first)
+
+## Next Priority
+Start with Wave 1: Infrastructure features #3 (config tests), #7 (fixtures), #8 (format utils)
+Features #1-6 are largely done from scaffolding but need test verification.
+
+## Session Log
+### Session 1 - 2026-03-06
+- What was done: Project scaffolding with long-running agent harness
+- Created: directory structure, init.sh, feature_list.json (78 features), CLAUDE.md
+- Created: config.py, tushare_collector.py, pdf_preprocessor.py (skeletons)
+- Copied: 8 prompt files from v0.16_alpha to prompts/
+- Git: initialized repo with initial commit
+- Next priority: Run init.sh, then implement features #3, #7, #8
