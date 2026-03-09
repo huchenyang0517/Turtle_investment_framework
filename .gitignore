@@ -18,6 +18,10 @@ ENV/
 *.swp
 *.swo
 
+# Claude Code
+.claude/
+.agents/
+
 # OS
 .DS_Store
 Thumbs.db
@@ -35,3 +39,8 @@ output/*
 
 # Tushare cache
 tushare_data/
+
+# Project
+claude-progress.txt
+CLAUDE.md
+feature_list.json

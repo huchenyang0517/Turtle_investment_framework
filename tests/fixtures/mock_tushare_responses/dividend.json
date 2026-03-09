@@ -9,7 +9,7 @@
     "record_date": "20250610",
     "ex_date": "20250611",
     "pay_date": "20250611",
-    "base_share": 6363636400.00
+    "base_share": 636363.64
   },
   {
     "ts_code": "600887.SH",
@@ -21,7 +21,7 @@
     "record_date": "20240610",
     "ex_date": "20240611",
     "pay_date": "20240611",
-    "base_share": 6363636400.00
+    "base_share": 636363.64
   },
   {
     "ts_code": "600887.SH",
@@ -33,7 +33,7 @@
     "record_date": "20230610",
     "ex_date": "20230611",
     "pay_date": "20230611",
-    "base_share": 6363636400.00
+    "base_share": 636363.64
   },
   {
     "ts_code": "600887.SH",
@@ -45,7 +45,7 @@
     "record_date": "20220610",
     "ex_date": "20220611",
     "pay_date": "20220611",
-    "base_share": 6363636400.00
+    "base_share": 636363.64
   },
   {
     "ts_code": "600887.SH",
@@ -57,6 +57,6 @@
     "record_date": "20210610",
     "ex_date": "20210611",
     "pay_date": "20210611",
-    "base_share": 6363636400.00
+    "base_share": 636363.64
   }
 ]

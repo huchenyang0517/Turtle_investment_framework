@@ -23,10 +23,13 @@ import pytest
 from scripts.pdf_preprocessor import (
     SECTION_KEYWORDS,
     SECTION_EXTRACT_CONFIG,
+    SECTION_ZONE_PREFERENCES,
+    ZONE_MARKERS,
     DEFAULT_BUFFER_PAGES,
     DEFAULT_MAX_CHARS,
     extract_all_pages,
     fallback_extract_pymupdf,
+    detect_zones,
     find_section_pages,
     extract_section_context,
     write_output,
@@ -35,6 +38,7 @@ from scripts.pdf_preprocessor import (
     _score_match,
     _tables_to_markdown,
     _truncate_at_boundary,
+    _load_hints,
     parse_args,
 )
 
@@ -632,7 +636,7 @@ class TestSUBExtraction:
         assert "SUB" in SECTION_KEYWORDS
         keywords = SECTION_KEYWORDS["SUB"]
         assert "主要控股参股公司分析" in keywords
-        assert "长期股权投资" in keywords
+        assert "控股子公司情况" in keywords
 
     def test_sub_extract_config(self):
         """SUB has buffer_pages=2, max_chars=6000."""
@@ -654,7 +658,7 @@ class TestSUBExtraction:
         pages = [
             (1, "目录内容"),
             (100, "主要控股参股公司分析 子公司列表如下"),
-            (200, "长期股权投资 明细"),
+            (200, "在子公司中的权益 明细"),
         ]
         result = find_section_pages(pages)
         assert 100 in result["SUB"]
@@ -690,8 +694,235 @@ class TestSUBExtraction:
         )
         assert has_trad, "SUB has no traditional Chinese keywords"
 
+    def test_standalone_equity_keyword_removed(self):
+        """'长期股权投资' (standalone) should NOT be in SUB keywords (too ambiguous)."""
+        keywords = SECTION_KEYWORDS["SUB"]
+        assert "长期股权投资" not in keywords
+        assert "長期股權投資" not in keywords
+        # But specific variants should be present
+        assert "长期股权投资——对子公司" in keywords
+        assert "長期股權投資——對子公司" in keywords
+
+    def test_accounting_context_penalized(self):
+        """Accounting detail context should score lower than subsidiary operating data."""
+        # Accounting context (权益法, 账面余额 → Note #17 style)
+        text_acct = "长期股权投资——对子公司 权益法 账面余额 减值准备 成本法核算"
+        score_acct = _score_match(
+            150, 270, text_acct, "长期股权投资——对子公司",
+            zone="NOTES_ZONE", section_id="SUB"
+        )
+        # Subsidiary operating data context
+        text_sub = "主要控股参股公司分析 营业收入 净利润 注册资本 持股比例明细"
+        score_sub = _score_match(
+            150, 270, text_sub, "主要控股参股公司分析",
+            zone="NOTES_ZONE", section_id="SUB"
+        )
+        assert score_sub > score_acct
+
+    def test_hints_override_keywords(self):
+        """When TOC hints exist for a section, they override keyword matching."""
+        pages = [(i + 1, f"Page {i + 1} content. " * 5) for i in range(20)]
+        pages[4] = (5, "主要控股参股公司分析 子公司列表")  # keyword match on page 5
+        pages[14] = (15, "actual subsidiary data here")  # no keyword but hint points here
+
+        # Without hints: keyword match on page 5
+        section_pages_no_hint = find_section_pages(pages)
+        assert section_pages_no_hint["SUB"][0] == 5
+
+        # With hints: override to page 15
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hints_path = os.path.join(tmpdir, "toc_hints.json")
+            with open(hints_path, "w") as f:
+                json.dump({"SUB": {"page": 15, "title": "主要控股参股公司"}}, f)
+
+            hints = _load_hints(hints_path)
+            assert "SUB" in hints
+            assert hints["SUB"]["page"] == 15
+
+    def test_hints_fallback(self):
+        """When hints file doesn't exist, _load_hints returns empty dict."""
+        assert _load_hints(None) == {}
+        assert _load_hints("/nonexistent/path.json") == {}
+
 
 # ============================================================
 # Import for datetime in test
 # ============================================================
 from datetime import datetime
+
+
+# ============================================================
+# Zone detection for A-share annual report structure
+# ============================================================
+
+class TestZoneDetection:
+    """Zone detection and zone-aware scoring for A-share annual reports."""
+
+    def test_detect_zones_empty_pages(self):
+        """Empty pages return empty zones dict."""
+        assert detect_zones([]) == {}
+
+    def test_detect_zones_no_markers(self):
+        """Pages without zone markers return empty dict."""
+        pages = [(1, "无关内容"), (2, "其他文本")]
+        assert detect_zones(pages) == {}
+
+    def test_detect_zones_single_marker(self):
+        """Single zone marker sets zone for all subsequent pages."""
+        pages = [
+            (1, "封面"),
+            (2, "第三节 管理层讨论与分析"),
+            (3, "经营分析内容"),
+            (4, "更多分析"),
+        ]
+        zones = detect_zones(pages)
+        assert zones.get(1) is None
+        assert zones[2] == "MDA_ZONE"
+        assert zones[3] == "MDA_ZONE"
+        assert zones[4] == "MDA_ZONE"
+
+    def test_detect_zones_multiple_markers(self):
+        """Multiple markers create zone transitions."""
+        pages = [
+            (1, "第三节 管理层讨论与分析"),
+            (2, "MDA内容"),
+            (3, "MDA内容"),
+            (4, "MDA内容"),
+            (5, "第十节 财务报告"),
+            (6, "财务数据"),
+            (7, "财务数据"),
+            (8, "财务数据"),
+            (9, "财务数据"),
+            (10, "七、合并财务报表项目注释"),
+            (11, "注释内容"),
+        ]
+        zones = detect_zones(pages)
+        assert zones[1] == "MDA_ZONE"
+        assert zones[4] == "MDA_ZONE"
+        assert zones[5] == "FIN_ZONE"
+        assert zones[9] == "FIN_ZONE"
+        assert zones[10] == "NOTES_ZONE"
+        assert zones[11] == "NOTES_ZONE"
+
+    def test_detect_zones_policy_vs_notes(self):
+        """Policy zone and notes zone are distinguished."""
+        pages = [
+            (1, "第十节 财务报告"),
+            (5, "四、重要会计政策"),
+            (6, "会计政策内容"),
+            (14, "会计政策继续"),
+            (15, "七、合并财务报表项目注释"),
+            (16, "注释数据"),
+        ]
+        zones = detect_zones(pages)
+        assert zones[5] == "POLICY_ZONE"
+        assert zones[6] == "POLICY_ZONE"
+        assert zones[14] == "POLICY_ZONE"
+        assert zones[15] == "NOTES_ZONE"
+        assert zones[16] == "NOTES_ZONE"
+
+    def test_detect_zones_supplement(self):
+        """Supplement zone detected."""
+        pages = [
+            (1, "第十节 财务报告"),
+            (10, "七、合并财务报表项目注释"),
+            (20, "二十、补充资料"),
+            (21, "补充内容"),
+        ]
+        zones = detect_zones(pages)
+        assert zones[20] == "SUPPLEMENT_ZONE"
+        assert zones[21] == "SUPPLEMENT_ZONE"
+
+    def test_zone_preferences_constants(self):
+        """All 7 section IDs have zone preferences."""
+        for sid in ["P2", "P3", "P4", "P6", "P13", "MDA", "SUB"]:
+            assert sid in SECTION_ZONE_PREFERENCES
+            assert "prefer" in SECTION_ZONE_PREFERENCES[sid]
+            assert "avoid" in SECTION_ZONE_PREFERENCES[sid]
+
+    def test_score_match_prefer_zone_bonus(self):
+        """Match in preferred zone gets +2.0 bonus."""
+        text = "应收账款账龄分析数据"
+        score = _score_match(170, 270, text, "应收账款账龄",
+                             zone="NOTES_ZONE", section_id="P3")
+        # Base 1.0 + zone bonus 2.0 = 3.0 (minus any other adjustments)
+        assert score >= 3.0
+
+    def test_score_match_avoid_zone_penalty(self):
+        """Match in avoided zone gets -2.0 penalty."""
+        text = "应收账款账龄的会计政策"
+        score = _score_match(120, 270, text, "应收账款账龄",
+                             zone="POLICY_ZONE", section_id="P3")
+        # Base 1.0 - zone penalty 2.0 = -1.0
+        assert score <= -0.5
+
+    def test_score_match_no_zone_fallback(self):
+        """Without zone info, falls back to position-based scoring."""
+        text = "受限资产"
+        # Late page, no zone info
+        score_late = _score_match(200, 270, text, "受限资产",
+                                  zone=None, section_id="P2")
+        # Early page, no zone info
+        score_early = _score_match(10, 270, text, "受限资产",
+                                   zone=None, section_id="P2")
+        assert score_late > score_early
+
+    def test_p3_prefers_notes_over_policy(self):
+        """P3 (应收账款账龄) in NOTES_ZONE scores higher than POLICY_ZONE."""
+        text = "应收账款账龄分析"
+        score_notes = _score_match(170, 270, text, "应收账款账龄",
+                                   zone="NOTES_ZONE", section_id="P3")
+        score_policy = _score_match(120, 270, text, "应收账款账龄",
+                                    zone="POLICY_ZONE", section_id="P3")
+        assert score_notes > score_policy
+
+    def test_mda_prefers_early_mda_zone(self):
+        """MDA in MDA_ZONE scores higher than cross-reference in NOTES_ZONE."""
+        text_mda = "管理层讨论与分析 经营情况"
+        text_notes = "与第三节管理层讨论与分析中分产品情况一致"
+        score_mda = _score_match(15, 270, text_mda, "管理层讨论与分析",
+                                 zone="MDA_ZONE", section_id="MDA")
+        score_notes = _score_match(251, 270, text_notes, "管理层讨论与分析",
+                                   zone="NOTES_ZONE", section_id="MDA")
+        assert score_mda > score_notes
+
+    def test_p13_prefers_supplement_over_policy(self):
+        """P13 in SUPPLEMENT_ZONE scores much higher than POLICY_ZONE."""
+        text = "非经常性损益明细"
+        score_supp = _score_match(260, 270, text, "非经常性损益",
+                                  zone="SUPPLEMENT_ZONE", section_id="P13")
+        score_policy = _score_match(120, 270, text, "非经常性损益",
+                                    zone="POLICY_ZONE", section_id="P13")
+        assert score_supp > score_policy
+        # Both SUPPLEMENT_ZONE and NOTES_ZONE are preferred for P13
+        score_notes = _score_match(212, 270, text, "非经常性损益",
+                                   zone="NOTES_ZONE", section_id="P13")
+        assert score_supp >= score_notes  # both preferred, equal bonus
+
+    def test_find_section_pages_uses_zones(self):
+        """find_section_pages integrates zone detection in scoring."""
+        # Simulate P3 disambiguation: keyword in both policy and notes zones
+        pages = [
+            (1, "第十节 财务报告"),
+            (5, "四、重要会计政策"),
+            (10, "应收账款账龄 按会计政策计提坏账准备"),
+            (20, "七、合并财务报表项目注释"),
+            (30, "应收账款账龄 1年以内80%金额表"),
+        ]
+        result = find_section_pages(pages)
+        # Should prefer page 30 (NOTES_ZONE) over page 10 (POLICY_ZONE)
+        assert result["P3"][0] == 30
+
+    def test_find_section_pages_mda_picks_early(self):
+        """MDA is found in early MDA_ZONE, not late cross-reference."""
+        pages = [
+            (1, "第一节 重要提示"),
+            (3, "第三节 管理层讨论与分析 经营情况回顾"),
+            (4, "收入分析"),
+            (50, "第十节 财务报告"),
+            (55, "七、合并财务报表项目注释"),
+            (60, "与第三节管理层讨论与分析中分产品情况一致"),
+        ]
+        result = find_section_pages(pages)
+        # Should prefer page 3 (MDA_ZONE) over page 60 (NOTES_ZONE)
+        assert result["MDA"][0] == 3

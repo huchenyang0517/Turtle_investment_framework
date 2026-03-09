@@ -49,6 +49,9 @@ class TestScreenerConfig:
         assert cfg.min_gross_margin == 15.0
         assert cfg.max_debt_ratio == 70.0
         assert cfg.max_pledge_pct == 70.0
+        assert cfg.cache_tier2_financial_ttl_hours == 168
+        assert cfg.cache_tier2_market_ttl_hours == 24
+        assert cfg.cache_tier2_global_ttl_hours == 24
 
     def test_scoring_weights_sum_to_one(self):
         cfg = ScreenerConfig()
@@ -144,10 +147,11 @@ class TestBulkMockFixtures:
         new = df[df["list_date"] == "20250101"]
         assert len(new) == 1
 
-    def test_daily_basic_has_negative_pe(self):
+    def test_daily_basic_has_nan_pe(self):
+        """Tushare returns NaN pe_ttm for loss-making stocks."""
         df = _load_bulk_mock("daily_basic_bulk.json")
-        neg_pe = df[df["pe_ttm"] < 0]
-        assert len(neg_pe) >= 1
+        nan_pe = df[df["pe_ttm"].isna()]
+        assert len(nan_pe) >= 1
 
     def test_daily_basic_has_zero_dividend(self):
         df = _load_bulk_mock("daily_basic_bulk.json")
@@ -240,6 +244,53 @@ class TestTier1BulkData:
         screener._safe_call = MagicMock(return_value=cal_df)
         result = screener._get_latest_trade_date()
         assert result == "20260306"
+
+    def test_trade_date_before_7pm(self, tmp_path):
+        """Before 19:00, should use yesterday to avoid incomplete daily_basic data."""
+        from datetime import datetime as real_datetime, timedelta
+
+        screener = _make_screener(tmp_path)
+        # Friday 2026-03-06 at 14:00 (before 19:00)
+        fake_now = real_datetime(2026, 3, 6, 14, 0, 0)
+        cal_df = pd.DataFrame({
+            "cal_date": ["20260302", "20260303", "20260304", "20260305"],
+            "is_open": [1, 1, 1, 1],
+        })
+        screener._safe_call = MagicMock(return_value=cal_df)
+
+        with patch("screener_core.datetime") as mock_dt:
+            mock_dt.now.return_value = fake_now
+            mock_dt.side_effect = lambda *a, **kw: real_datetime(*a, **kw)
+            result = screener._get_latest_trade_date()
+
+        # Should NOT return 20260306 (today); should use previous trade date
+        assert result == "20260305"
+        # Verify end_date passed to trade_cal is yesterday (20260305)
+        call_kwargs = screener._safe_call.call_args[1]
+        assert call_kwargs["end_date"] == "20260305"
+
+    def test_trade_date_after_7pm(self, tmp_path):
+        """After 19:00, today's data is ready so today should be included."""
+        from datetime import datetime as real_datetime, timedelta
+
+        screener = _make_screener(tmp_path)
+        # Friday 2026-03-06 at 20:00 (after 19:00)
+        fake_now = real_datetime(2026, 3, 6, 20, 0, 0)
+        cal_df = pd.DataFrame({
+            "cal_date": ["20260303", "20260304", "20260305", "20260306"],
+            "is_open": [1, 1, 1, 1],
+        })
+        screener._safe_call = MagicMock(return_value=cal_df)
+
+        with patch("screener_core.datetime") as mock_dt:
+            mock_dt.now.return_value = fake_now
+            mock_dt.side_effect = lambda *a, **kw: real_datetime(*a, **kw)
+            result = screener._get_latest_trade_date()
+
+        # Should return today since it's after 19:00
+        assert result == "20260306"
+        call_kwargs = screener._safe_call.call_args[1]
+        assert call_kwargs["end_date"] == "20260306"
 
     def test_tier1_bulk_data_merge(self, tmp_path):
         screener = _make_screener(tmp_path)
@@ -353,9 +404,9 @@ class TestTier1Filter:
             if not main.empty:
                 assert (main["pe_ttm"] > 0).all()
                 assert (main["pe_ttm"] <= 50).all()
-            # Observation channel PE should be < 0
+            # Observation channel PE should be NaN (loss-making)
             if not obs.empty:
-                assert (obs["pe_ttm"] < 0).all()
+                assert obs["pe_ttm"].isna().all()
 
     def test_high_pe_excluded_from_main(self, tmp_path):
         """PE > 50 should be excluded from main channel."""
@@ -370,14 +421,14 @@ class TestTier1Filter:
     def test_observation_channel_limit(self, tmp_path):
         cfg = ScreenerConfig(obs_channel_limit=1)
         screener = _make_screener(tmp_path, config=cfg)
-        # Create data with multiple negative PE stocks
+        # Create data with multiple NaN PE stocks (Tushare returns NaN for loss-making)
         df = pd.DataFrame({
             "ts_code": ["A.SH", "B.SH", "C.SH"],
-            "name": ["负PE1", "负PE2", "负PE3"],
+            "name": ["亏损1", "亏损2", "亏损3"],
             "industry": ["测试", "测试", "测试"],
             "list_date": ["20100101", "20100101", "20100101"],
             "close": [10.0, 20.0, 30.0],
-            "pe_ttm": [-5.0, -10.0, -15.0],
+            "pe_ttm": [float("nan"), float("nan"), float("nan")],
             "pb": [1.0, 2.0, 3.0],
             "total_mv": [500000, 800000, 300000],
             "circ_mv": [400000, 700000, 250000],
@@ -402,20 +453,43 @@ class TestTier1Filter:
         result = screener._tier1_filter(pd.DataFrame())
         assert result.empty
 
+    def test_excludes_banks_by_default(self, tmp_path):
+        """Default include_bank=False should exclude 银行 industry stocks."""
+        screener = self._get_screener(tmp_path)
+        df = _merged_mock_df()
+        result = screener._tier1_filter(df)
+        passed_industries = result["industry"].tolist()
+        assert "银行" not in passed_industries
+
+    def test_includes_banks_when_enabled(self, tmp_path):
+        """include_bank=True should keep bank stocks."""
+        cfg = ScreenerConfig(include_bank=True)
+        screener = _make_screener(tmp_path, config=cfg)
+        df = _merged_mock_df()
+        result = screener._tier1_filter(df)
+        passed_industries = result["industry"].tolist()
+        assert "银行" in passed_industries
+
     def test_full_mock_filter_results(self, tmp_path):
         """With mock data, verify expected stocks pass/fail."""
         screener = self._get_screener(tmp_path)
         df = _merged_mock_df()
         result = screener._tier1_filter(df)
         passed_codes = set(result["ts_code"].values)
-        # Should pass: 600887 (normal), 601398 (bank, low PE), 000858, 000001
-        # Should fail: 000666 (ST, neg PB, zero div), 301234 (new IPO, zero div)
-        # 688981: PE=55 (>50), dv_ttm=0.20 → passes other filters but PE too high
-        # 300750: dv_ttm=0.80 → passes, PE=35 → main channel OK
-        # 600519: PE=25, PB=8.5 → PB ≤ 10, passes
-        # 600100: PE=-12 → observation channel
+        # Main channel: 600887 (PE=18.5, dv>0), 000858 (PE=20, dv>0),
+        #   300750 (PE=35, dv=0.80), 600519 (PE=25, PB=8.5≤10, dv>0)
+        # Observation: 600100 (PE=NaN, loss-making → obs channel)
+        # Excluded: 000666 (ST + neg PB + low mkt cap), 301234 (new IPO, dv=0 but PE valid)
+        # Excluded: 601398, 000001 (银行, excluded by default)
+        # Excluded: 688981 (PE=55 >50, dv=0.20 but PE too high → neither channel)
         assert "000666.SZ" not in passed_codes
         assert "301234.SZ" not in passed_codes
+        assert "601398.SH" not in passed_codes
+        assert "000001.SZ" not in passed_codes
+        # 600100 should be in observation channel (NaN PE)
+        assert "600100.SH" in passed_codes
+        obs = result[result["channel"] == "observation"]
+        assert "600100.SH" in obs["ts_code"].values
 
 
 # ============================================================
@@ -650,22 +724,32 @@ class TestFactor2Metrics:
             "ts_code": ["A.SH"] * 3,
             "end_date": ["20251231", "20241231", "20231231"],
             "n_income_attr_p": [1e9, 9e8, 8e8],  # yuan
+            "non_oper_income": [5e7, 4e7, 3e7],
+            "oth_income": [2e7, 1e7, 1e7],
+            "asset_disp_income": [1e7, 0, 0],
         })
         div_df = pd.DataFrame({
             "ts_code": ["A.SH"] * 3,
             "end_date": ["20251231", "20241231", "20231231"],
             "cash_div_tax": [0.5, 0.45, 0.40],  # per share
-            "base_share": [1e8, 1e8, 1e8],  # 万股... actually shares
+            "base_share": [1e8, 1e8, 1e8],  #万股... actually shares
+        })
+        cf_df = pd.DataFrame({
+            "ts_code": ["A.SH"] * 3,
+            "end_date": ["20251231", "20241231", "20231231"],
+            "n_cashflow_act": [1.5e9, 1.3e9, 1.1e9],  # OCF in yuan
+            "c_pay_acq_const_fiolta": [3e8, 2.5e8, 2e8],  # capex in yuan
+            "depr_fa_coga_dpba": [0, 0, 0], "amort_intang_assets": [0, 0, 0],
+            "lt_amort_deferred_exp": [0, 0, 0],
         })
 
-        call_count = {"n": 0}
-
         def _mock_call(api_name, **kwargs):
-            call_count["n"] += 1
             if api_name == "income":
                 return income_df
             if api_name == "dividend":
                 return div_df
+            if api_name == "cashflow":
+                return cf_df
             return pd.DataFrame()
 
         screener._safe_call = _mock_call
@@ -674,7 +758,46 @@ class TestFactor2Metrics:
         assert result["Rf"] == 2.5
         assert result["II"] == max(3.5, 2.5 + 2.0)  # 4.5
         assert result["M"] is not None
+        assert result["AA"] is not None
         assert result["R"] is not None
+
+        # Verify AA = (OCF + V1 - V_deduct - |Capex|) / 1e6
+        # OCF=1.5e9, V1=1e7, V_deduct=5e7+2e7=7e7, Capex=3e8
+        # AA = (1.5e9 + 1e7 - 7e7 - 3e8) / 1e6 = (1.5e9 - 3.6e8) / 1e6 = 1140
+        expected_AA = (1.5e9 + 1e7 - 7e7 - 3e8) / 1e6
+        assert abs(result["AA"] - expected_AA) < 0.01
+
+    def test_missing_cashflow_returns_none(self, tmp_path):
+        """If cashflow data is empty, AA=None and R=None."""
+        screener = _make_screener(tmp_path)
+        screener._rf_cache = 2.5
+
+        income_df = pd.DataFrame({
+            "ts_code": ["A.SH"],
+            "end_date": ["20251231"],
+            "n_income_attr_p": [1e9],
+            "non_oper_income": [5e7],
+            "oth_income": [2e7],
+            "asset_disp_income": [1e7],
+        })
+        div_df = pd.DataFrame({
+            "ts_code": ["A.SH"],
+            "end_date": ["20251231"],
+            "cash_div_tax": [0.5],
+            "base_share": [1e8],
+        })
+
+        def _mock_call(api_name, **kwargs):
+            if api_name == "income":
+                return income_df
+            if api_name == "dividend":
+                return div_df
+            return pd.DataFrame()  # cashflow returns empty
+
+        screener._safe_call = _mock_call
+        result = screener._extract_factor2_metrics("A.SH", total_mv_wan=50000)
+        assert result["AA"] is None
+        assert result["R"] is None
 
     def test_rf_cached_globally(self, tmp_path):
         screener = _make_screener(tmp_path)
@@ -697,12 +820,14 @@ class TestFactor2Metrics:
         income_df = pd.DataFrame({
             "ts_code": ["A.SH"], "end_date": ["20251231"],
             "n_income_attr_p": [1e9],
+            "non_oper_income": [0], "oth_income": [0],
+            "asset_disp_income": [0],
         })
 
         def _mock_call(api_name, **kwargs):
             if api_name == "income":
                 return income_df
-            return pd.DataFrame()
+            return pd.DataFrame()  # dividend and cashflow empty
 
         screener._safe_call = _mock_call
         result = screener._extract_factor2_metrics("A.SH", total_mv_wan=50000)
@@ -1126,3 +1251,271 @@ class TestPipelineAndExport:
         result = screener.run(tier2_limit=1)
         # Should have at least 1 result (or 0 if all vetoed)
         assert isinstance(result, pd.DataFrame)
+
+
+# ============================================================
+# Feature #108: Tier 2 Per-Stock Data Cache
+# ============================================================
+
+
+class TestTier2Cache:
+    """Tests for _cached_call, _clear_stock_cache, and per-stock caching."""
+
+    def test_cached_call_stores_to_disk(self, tmp_path):
+        """First call writes to disk cache."""
+        screener = _make_screener(tmp_path)
+        income_df = pd.DataFrame({
+            "ts_code": ["A.SH"], "end_date": ["20251231"],
+            "n_income_attr_p": [4e9], "operate_profit": [5e9],
+            "finance_exp": [2e8],
+        })
+        screener._safe_call = MagicMock(return_value=income_df)
+
+        result = screener._cached_call("income", ts_code="A.SH", report_type="1")
+        assert not result.empty
+        assert len(result) == 1
+
+        # Verify disk cache was written
+        disk = screener.cache.get("tier2_A.SH_income", ttl_seconds=999999)
+        assert disk is not None
+        assert len(disk) == 1
+
+    def test_cached_call_reads_from_disk(self, tmp_path):
+        """Second call should NOT trigger _safe_call (disk hit)."""
+        screener = _make_screener(tmp_path)
+        income_df = pd.DataFrame({
+            "ts_code": ["A.SH"], "end_date": ["20251231"],
+            "n_income_attr_p": [4e9], "operate_profit": [5e9],
+            "finance_exp": [2e8],
+        })
+
+        # Pre-populate disk cache
+        screener.cache.put("tier2_A.SH_income", income_df)
+        mock_call = MagicMock(return_value=pd.DataFrame())
+        screener._safe_call = mock_call
+
+        result = screener._cached_call("income", ts_code="A.SH", report_type="1")
+        assert not result.empty
+        # _safe_call should NOT have been called
+        mock_call.assert_not_called()
+
+    def test_cached_call_in_memory_dedup(self, tmp_path):
+        """Same stock, same API called twice → _safe_call invoked only once."""
+        screener = _make_screener(tmp_path)
+        income_df = pd.DataFrame({
+            "ts_code": ["A.SH"], "end_date": ["20251231"],
+            "n_income_attr_p": [4e9], "operate_profit": [5e9],
+            "finance_exp": [2e8],
+        })
+        mock_call = MagicMock(return_value=income_df)
+        screener._safe_call = mock_call
+
+        # First call → API
+        r1 = screener._cached_call("income", ts_code="A.SH", report_type="1")
+        # Second call → in-memory
+        r2 = screener._cached_call("income", ts_code="A.SH", report_type="1")
+
+        assert not r1.empty
+        assert not r2.empty
+        assert mock_call.call_count == 1  # only one API call
+
+    def test_cached_call_ttl_expiry(self, tmp_path):
+        """TTL-expired disk cache triggers fresh API call."""
+        screener = _make_screener(tmp_path)
+        old_df = pd.DataFrame({
+            "ts_code": ["A.SH"], "end_date": ["20241231"],
+            "n_income_attr_p": [3e9], "operate_profit": [4e9],
+            "finance_exp": [1e8],
+        })
+
+        # Write cache with a very old timestamp
+        screener.cache.put("tier2_A.SH_income", old_df)
+        meta_path = screener.cache._meta_path("tier2_A.SH_income")
+        with open(meta_path, "w") as f:
+            f.write(f"0.0\ntier2_A.SH_income")  # epoch = 0 → always expired
+
+        new_df = pd.DataFrame({
+            "ts_code": ["A.SH"], "end_date": ["20251231"],
+            "n_income_attr_p": [4e9], "operate_profit": [5e9],
+            "finance_exp": [2e8],
+        })
+        mock_call = MagicMock(return_value=new_df)
+        screener._safe_call = mock_call
+
+        result = screener._cached_call("income", ts_code="A.SH", report_type="1")
+        assert not result.empty
+        mock_call.assert_called_once()
+        # Verify new data is returned
+        assert result.iloc[0]["end_date"] == "20251231"
+
+    def test_cached_call_empty_df_not_cached(self, tmp_path):
+        """Empty DataFrame from API should not be stored in cache."""
+        screener = _make_screener(tmp_path)
+        screener._safe_call = MagicMock(return_value=pd.DataFrame())
+
+        result = screener._cached_call("income", ts_code="A.SH", report_type="1")
+        assert result.empty
+
+        # Memory cache should not contain the key
+        assert "tier2_A.SH_income" not in screener._stock_data_cache
+        # Disk cache should not contain the key
+        assert screener.cache.get("tier2_A.SH_income", 999999) is None
+
+    def test_clear_stock_cache(self, tmp_path):
+        """_clear_stock_cache removes one stock's memory entries without affecting others."""
+        screener = _make_screener(tmp_path)
+        df_a = pd.DataFrame({"ts_code": ["A.SH"], "end_date": ["20251231"],
+                              "n_income_attr_p": [4e9], "operate_profit": [5e9],
+                              "finance_exp": [2e8]})
+        df_b = pd.DataFrame({"ts_code": ["B.SH"], "end_date": ["20251231"],
+                              "n_income_attr_p": [3e9], "operate_profit": [4e9],
+                              "finance_exp": [1e8]})
+
+        # Populate memory cache for two stocks
+        screener._stock_data_cache["tier2_A.SH_income"] = df_a
+        screener._stock_data_cache["tier2_A.SH_balancesheet"] = df_a
+        screener._stock_data_cache["tier2_B.SH_income"] = df_b
+
+        screener._clear_stock_cache("A.SH")
+
+        assert "tier2_A.SH_income" not in screener._stock_data_cache
+        assert "tier2_A.SH_balancesheet" not in screener._stock_data_cache
+        assert "tier2_B.SH_income" in screener._stock_data_cache  # preserved
+
+    def test_field_superset_override(self, tmp_path):
+        """_cached_call uses _TIER2_FIELDS superset, not caller-specified fields."""
+        from screener_core import _TIER2_FIELDS
+        screener = _make_screener(tmp_path)
+        screener._safe_call = MagicMock(return_value=pd.DataFrame({
+            "ts_code": ["A.SH"], "end_date": ["20251231"],
+        }))
+
+        screener._cached_call("income", ts_code="A.SH", report_type="1")
+
+        # Check that _safe_call was called with superset fields
+        call_kwargs = screener._safe_call.call_args[1]
+        assert call_kwargs["fields"] == _TIER2_FIELDS["income"]
+
+    def test_analyze_dedup_call_count(self, tmp_path):
+        """Full _analyze_single_stock should invoke _safe_call only 8 times (not 12)."""
+        screener = _make_screener(tmp_path)
+        screener._rf_cache = 2.5  # pre-set to avoid yc_cb call
+
+        income_df = pd.DataFrame({
+            "ts_code": ["600887.SH"] * 3,
+            "end_date": ["20251231", "20241231", "20231231"],
+            "operate_profit": [5e9, 4.5e9, 4e9],
+            "finance_exp": [2e8, 1.5e8, 1e8],
+            "n_income_attr_p": [4e9, 3.5e9, 3e9],
+        })
+        bs_df = pd.DataFrame({
+            "ts_code": ["600887.SH"], "end_date": ["20251231"],
+            "money_cap": [3e9], "trad_asset": [1e9],
+            "st_borr": [5e8], "lt_borr": [2e9],
+            "bond_payable": [0], "non_cur_liab_due_1y": [3e8],
+            "goodwill": [1e8], "total_assets": [3e10],
+            "total_hldr_eqy_exc_min_int": [1.5e10],
+        })
+        cf_df = pd.DataFrame({
+            "ts_code": ["600887.SH"] * 3,
+            "end_date": ["20251231", "20241231", "20231231"],
+            "n_cashflow_act": [6e9, 5.5e9, 5e9],
+            "c_pay_acq_const_fiolta": [2e9, 1.8e9, 1.6e9],
+            "depr_fa_coga_dpba": [8e8, 7e8, 6e8],
+            "amort_intang_assets": [1e8, 1e8, 1e8],
+            "lt_amort_deferred_exp": [5e7, 5e7, 5e7],
+        })
+        div_df = pd.DataFrame({
+            "ts_code": ["600887.SH"] * 3,
+            "end_date": ["20251231", "20241231", "20231231"],
+            "cash_div_tax": [1.0, 0.9, 0.8],
+            "base_share": [6.4e9, 6.4e9, 6.4e9],
+        })
+        pledge_df = pd.DataFrame({
+            "ts_code": ["600887.SH"], "end_date": ["20251231"],
+            "pledge_count": [1], "pledge_ratio": [5.0],
+        })
+        audit_df = pd.DataFrame({
+            "ts_code": ["600887.SH"], "end_date": ["20251231"],
+            "audit_result": ["标准无保留意见"],
+        })
+        fina_df = pd.DataFrame({
+            "ts_code": ["600887.SH"], "end_date": ["20251231"],
+            "roe_waa": [20.0], "grossprofit_margin": [35.0],
+            "debt_to_assets": [45.0], "profit_dedt": [5e9],
+        })
+        weekly_df = pd.DataFrame({
+            "ts_code": ["600887.SH"] * 3,
+            "trade_date": ["20260101", "20250601", "20200101"],
+            "close": [28.0, 25.0, 15.0],
+        })
+
+        call_count = [0]
+        def _mock_call(api_name, **kwargs):
+            call_count[0] += 1
+            if api_name == "pledge_stat":
+                return pledge_df
+            if api_name == "fina_audit":
+                return audit_df
+            if api_name == "fina_indicator":
+                return fina_df
+            if api_name == "income":
+                return income_df
+            if api_name == "balancesheet":
+                return bs_df
+            if api_name == "cashflow":
+                return cf_df
+            if api_name == "weekly":
+                return weekly_df
+            if api_name == "dividend":
+                return div_df
+            return pd.DataFrame()
+
+        screener._safe_call = _mock_call
+
+        row = pd.Series({
+            "ts_code": "600887.SH", "name": "伊利股份",
+            "industry": "乳品", "channel": "main",
+            "close": 28.0, "total_mv": 17500000,
+            "pe_ttm": 20.0, "pb": 4.0, "dv_ttm": 3.5,
+        })
+
+        result = screener._analyze_single_stock(row)
+        assert result is not None
+
+        # Without caching: 12 calls (pledge, audit, fina_indicator,
+        #   income×2, dividend×2, balancesheet×2, cashflow×2, weekly×1)
+        # With caching: 8 calls (income/dividend/balancesheet/cashflow each called once)
+        assert call_count[0] == 8, f"Expected 8 API calls, got {call_count[0]}"
+
+        # Memory cache should be cleared after analysis
+        stock_keys = [k for k in screener._stock_data_cache
+                      if k.startswith("tier2_600887.SH_")]
+        assert len(stock_keys) == 0, "Memory cache should be cleared after analysis"
+
+    def test_global_cache_key(self, tmp_path):
+        """yc_cb uses global_ prefix (no ts_code)."""
+        screener = _make_screener(tmp_path)
+        rf_df = pd.DataFrame({"trade_date": ["20260306"], "yield": [2.5]})
+        screener._safe_call = MagicMock(return_value=rf_df)
+
+        result = screener._cached_call("yc_cb", ts_code=None, curve_type="0")
+        assert not result.empty
+        assert "global_yc_cb" in screener._stock_data_cache
+
+    def test_invalidate_prefix(self, tmp_path):
+        """invalidate_prefix removes matching entries but preserves others."""
+        from screener_core import ScreenerCache
+        cache = ScreenerCache(str(tmp_path / "cache"))
+        df_a = pd.DataFrame({"x": [1]})
+        df_b = pd.DataFrame({"x": [2]})
+
+        cache.put("tier2_A.SH_income", df_a)
+        cache.put("tier2_A.SH_bs", df_a)
+        cache.put("global_yc_cb", df_b)
+
+        cache.invalidate_prefix("tier2_")
+
+        assert cache.get("tier2_A.SH_income", 999999) is None
+        assert cache.get("tier2_A.SH_bs", 999999) is None
+        assert cache.get("global_yc_cb", 999999) is not None

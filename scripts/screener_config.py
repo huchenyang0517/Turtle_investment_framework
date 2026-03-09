@@ -50,6 +50,7 @@ class ScreenerConfig:
     min_turnover_pct: float = 0.1   # %
     max_pb: float = 10.0
     max_pe: float = 50.0
+    include_bank: bool = False  # 是否包含银行股
 
     # --- Tier 1: Dual-channel PE ---
     obs_channel_limit: int = 50
@@ -81,6 +82,9 @@ class ScreenerConfig:
     cache_daily_basic_ttl_days: int = 0  # 0 = same-day only
     cache_rf_ttl_days: int = 1
     cache_tier2_ttl_hours: int = 24
+    cache_tier2_financial_ttl_hours: int = 168  # 7天，年报类数据
+    cache_tier2_market_ttl_hours: int = 24      # 1天，周线行情
+    cache_tier2_global_ttl_hours: int = 24      # 1天，yc_cb 无风险利率
 
     @property
     def tier2_max_stocks(self) -> int:

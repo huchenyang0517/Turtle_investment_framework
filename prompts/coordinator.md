@@ -10,7 +10,7 @@
 - **新增 Phase 0**：集成 `snowball-report-downloader` 插件，自动搜索并下载年报 PDF
 - **Phase 1 拆分两步**：Step A = `tushare_collector.py`（Python 脚本采集结构化数据）+ Step B = Agent WebSearch（非结构化信息）
 - **Phase 2 拆分两步**：Step A = `pdf_preprocessor.py`（Python 关键词定位 7 章节：P2-P13 + MDA + SUB）+ Step B = Agent 精提取（5+1 项 footnote 数据，SUB 条件触发）
-- **Pipeline 重排**：Phase 1A + Phase 2A 并行运行，完成后再启动 Phase 1B（可读取 pdf_sections.json 的 MDA 段用于 §10）
+- **Pipeline 重排**：Phase 1A + Phase 2A 并行运行；Phase 1B 在 Phase 1A 完成后立即启动（§10 到达时检查 pdf_sections.json）
 - **单位统一**：所有金额单位为 **百万元**（Tushare 原始单位元 ÷ 1e6）
 - **新增母公司报表**：§3P/§4P 母公司损益表和资产负债表（Tushare `report_type=4`）
 - **yfinance 保留为 fallback**：Tushare 失败时降级使用
@@ -162,16 +162,19 @@ AskUserQuestion:
 │  └────────────────────────┘                        │
 │                                                    │
 └───────────┬────────────────────────────────────────┘
-            │  等待两个脚本完成
+            │  Phase 1A 完成后立即启动 Phase 1B
+            │  Phase 2A 可与 Phase 1B 并行运行
             ▼
-┌─────────── Step B: Agent（顺序启动）───────────────┐
+┌─────────── Step B: Agent（Phase 1A 完成后启动）────┐
 │                                                    │
 │  ┌────────────────────────┐                        │
 │  │  Phase 1B: WebSearch   │                        │
 │  │  补充 §7, §8, §10, §13│                        │
-│  │  ⚠️ §10 优先使用        │                        │
+│  │  ⚠️ §7/§8/§9B 不依赖   │                        │
 │  │    pdf_sections.json   │                        │
-│  │    的 MDA 字段          │                        │
+│  │  ⚠️ §10 到达时检查      │                        │
+│  │    pdf_sections.json   │                        │
+│  │    是否已生成           │                        │
 │  │  → 追加到              │                        │
 │  │    data_pack_market.md │                        │
 │  └────────┬───────────────┘                        │
@@ -179,6 +182,7 @@ AskUserQuestion:
 │  ┌────────────────────────┐                        │
 │  │  Phase 2B: PDF精提取    │                        │
 │  │  ⚠️ 仅当有PDF时         │                        │
+│  │  ⚠️ 等待 Phase 2A 完成  │                        │
 │  │  精提取5+1项footnote   │                        │
 │  │  (SUB条件触发)          │                        │
 │  │  → data_pack_report.md │                        │
@@ -230,13 +234,18 @@ pip install tushare pandas pdfplumber --break-system-packages
 ### Phase 0：PDF 自动获取
 
 ```
-# 仅当用户选择"自动下载"时执行
+# 步骤 1：下载年报（必选，仅当用户选择"自动下载"时执行）
 Skill("snowball-report-downloader:report-download")
 # 或在 Claude Code 中：/download-report {stock_code} {year} 年报
+# 下载目标年报 → {output_dir}/{code}_{year}_年报.pdf
 
 # 检查下载结果
 # 成功 → pdf_path = 下载文件路径
 # 失败 → pdf_path = None，进入无 PDF 模式
+
+# 步骤 2：下载中报（条件触发）
+# ⚠️ 仅当 Phase 1A 输出显示中报已发布时执行（见中报时效性规则）
+# 下载目标中报 → {output_dir}/{code}_{year}_中报.pdf
 ```
 
 ### Step A：Python 脚本（Phase 1A + Phase 2A 并行）
@@ -250,19 +259,41 @@ Bash(
 # 输出：data_pack_market.md（§1-§6, §7部分, §9, §11, §12, §14, §15, §16, §3P, §4P, 审计意见, §13.1）
 # 输出：available_fields.json（可用字段清单）
 
-# === Phase 2A：PDF 预处理（Bash 调用，仅当有 PDF 时，与 Phase 1A 并行）===
+# === Phase 2A.5（可选）：Agent 读取 PDF 前 10 页提取 TOC ===
+# ⚠️ 仅当有 PDF 时执行，可与 Phase 1A 并行
+Task(
+  subagent_type = "general-purpose",
+  prompt = """
+  读取 PDF 文件 {output_dir}/{code}_{year}_年报.pdf 前 10 页。从目录页提取章节→页码映射，重点定位：
+  - "主要控股参股公司" 或 "在子公司中的权益" 章节的起始页
+  - "管理层讨论与分析" 章节的起始页
+  输出 JSON: {output_dir}/toc_hints.json
+  格式: {"SUB": {"page": N, "title": "..."}, "MDA": {"page": N, "title": "..."}}
+  若目录页不存在或无法解析，输出空 JSON: {}
+  """,
+  description = "Phase2A.5 TOC定位"
+)
+
+# === Phase 2A：PDF 预处理（Bash 调用，仅当有 PDF 时，等待 Phase 2A.5）===
+# 年报 PDF（必选，若有 PDF）
 Bash(
-  command = "python3 scripts/pdf_preprocessor.py --pdf {pdf_path} --output {output_dir}/pdf_sections.json",
-  description = "Phase2A PDF预处理"
+  command = "python3 scripts/pdf_preprocessor.py --pdf {output_dir}/{code}_{year}_年报.pdf --output {output_dir}/pdf_sections.json --hints {output_dir}/toc_hints.json",
+  description = "Phase2A PDF预处理-年报"
 )
 # 输出：pdf_sections.json（7 段文本片段：P2/P3/P4/P6/P13/MDA/SUB）
+
+# 中报 PDF（条件触发，若中报 PDF 存在）
+Bash(
+  command = "python3 scripts/pdf_preprocessor.py --pdf {output_dir}/{code}_{h1_year}_中报.pdf --output {output_dir}/pdf_sections_interim.json",
+  description = "Phase2A PDF预处理-中报"
+)
 ```
 
-### Step B：Agent（Phase 1B + Phase 2B 顺序，等待 Step A 完成）
+### Step B：Agent（Phase 1B 在 Phase 1A 完成后立即启动，Phase 2B 等待 Phase 2A）
 
 ```
 # === Phase 1B：Agent WebSearch 补充（Task 调用）===
-# ⚠️ 等待 Phase 1A + Phase 2A 都完成后再启动
+# ⚠️ Phase 1A 完成后立即启动，不等待 Phase 2A
 Task(
   subagent_type = "general-purpose",
   prompt = """
@@ -276,8 +307,17 @@ Task(
   - §7 管理层与治理
   - §8 行业与竞争
   - §9B 上市子公司识别（条件触发：仅控股公司）
-  - §10 MD&A 摘要（优先使用 {output_dir}/pdf_sections.json 中的 MDA 字段，若不可用则 WebSearch）
+  - §10 MD&A 摘要
   - §13 Warnings
+
+  §7/§8/§9B 不依赖 pdf_sections.json，直接通过 WebSearch 获取。
+  §10 执行时检查 {output_dir}/pdf_sections.json 是否存在：
+    若存在 → 优先使用其中的 MDA 字段
+    若不存在 → 使用 WebSearch fallback 获取 MDA 摘要
+
+  注意：data_pack_market.md 中 §8, §10, §13.2 含占位符 `*[§N 待Agent WebSearch补充]*`。
+  使用 Edit 工具**替换**这些占位符为实际内容，而非在文件末尾追加。
+  §7 已有结构化数据（十大股东表+审计意见），在其后追加定性信息即可。
   """,
   description = "Phase1B WebSearch补充"
 )
@@ -289,8 +329,10 @@ Task(
   请阅读 {prompts_dir}/phase2_PDF解析.md 中的完整指令。
 
   pdf_sections.json 文件路径：{output_dir}/pdf_sections.json
+  中报 pdf_sections（若有）：{output_dir}/pdf_sections_interim.json
   公司名称：{company_name}
   将解析结果写入：{output_dir}/data_pack_report.md
+  将中报解析结果写入（若有中报）：{output_dir}/data_pack_report_interim.md
   """,
   description = "Phase2B PDF精提取"
 )
@@ -307,7 +349,8 @@ Task(
 
   数据包文件：
     - {output_dir}/data_pack_market.md
-    - {output_dir}/data_pack_report.md （若存在）
+    - {output_dir}/data_pack_report.md （年报附注，若存在）
+    - {output_dir}/data_pack_report_interim.md （中报附注，若存在）
   因子参考文件目录：{prompts_dir}/references/
   将分析报告写入：{output_dir}/{company}_{code}_分析报告.md
 
@@ -315,6 +358,8 @@ Task(
   - 所有金额单位为百万元（人民币），报告中显示时使用千位逗号分隔
   - 母公司报表数据来自 data_pack_market.md §3P/§4P
   - 若 data_pack_report.md 不存在，使用降级方案
+  - ⚠️ 当中报数据包存在时，应优先使用中报中更新的数据（如最新受限资产、
+    应收账款账龄等），但年报数据作为完整年度基线仍需参考
   """,
   description = "Phase3 分析报告"
 )
@@ -354,6 +399,34 @@ Task(
 Tushare 数据自动覆盖最近 5 个财年，无需手动指定年份。
 
 **支付率等关键指标必须基于同币种数据计算**（股息总额与归母净利润均取报表币种），不依赖 yfinance 的 payoutRatio 等衍生字段。
+
+### 中报时效性规则（双PDF触发）
+
+当 Phase 1A 的输出 data_pack_market.md 中出现 "YYYYH1" 列（如 "2025H1"），
+说明该公司已发布比最新年报更新的中报（半年报）。此时：
+
+1. Phase 0 应下载**两份** PDF：最新年报 + 最新中报
+2. Phase 2A 应对两份 PDF 分别运行 pdf_preprocessor.py
+3. Phase 2B 应分别处理两份 pdf_sections.json
+4. Phase 3 应同时参考两份 data_pack_report
+
+判断方法：Phase 1A 完成后，检查 data_pack_market.md 的 §3 损益表表头。
+若第一列为 "YYYYH1" 格式 → 触发双 PDF 流程。
+
+示例：
+  表头为 ["2025H1", "2024", "2023", ...] → 下载 2024年报 + 2025中报
+  表头为 ["2024", "2023", ...]           → 仅下载 2024年报
+
+执行顺序调整：
+```
+Phase 1A + Phase 0-年报 (并行)
+    ↓
+检查 Phase 1A 输出是否包含 H1 列
+    ↓ (若有)
+Phase 0-中报 (补充下载)
+    ↓
+Phase 2A (处理全部 PDF)
+```
 
 ---
 
@@ -404,8 +477,12 @@ Tushare 数据自动覆盖最近 5 个财年，无需手动指定年份。
     ├── 600887_伊利股份/                          ← 示例：伊利股份
     │   ├── data_pack_market.md                  ← Phase 1 输出
     │   ├── available_fields.json                ← Phase 1 输出（可用字段清单）
-    │   ├── pdf_sections.json                    ← Phase 2 Step A 输出
-    │   ├── data_pack_report.md                  ← Phase 2 Step B 输出（可选）
+    │   ├── 600887_2024_年报.pdf                  ← Phase 0 下载（年报）
+    │   ├── 600887_2025_中报.pdf                  ← Phase 0 下载（中报，条件触发）
+    │   ├── pdf_sections.json                    ← Phase 2A 输出（年报）
+    │   ├── pdf_sections_interim.json            ← Phase 2A 输出（中报，条件触发）
+    │   ├── data_pack_report.md                  ← Phase 2B 输出（年报附注）
+    │   ├── data_pack_report_interim.md          ← Phase 2B 输出（中报附注，条件触发）
     │   └── 伊利股份_600887_分析报告.md             ← Phase 3 输出（最终报告）
     ├── 00001_长和/                               ← 示例：长和
     │   └── ...

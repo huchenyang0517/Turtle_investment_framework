@@ -67,7 +67,7 @@ def format_table(headers: List[str], rows: List[List[str]],
     for row in rows:
         # Pad row to match header length
         padded = list(row) + [""] * (n_cols - len(row))
-        lines.append("| " + " | ".join(str(c) for c in padded[:n_cols]) + " |")
+        lines.append("| " + " | ".join(str(c) if c is not None else "—" for c in padded[:n_cols]) + " |")
 
     return "\n".join(lines)
 

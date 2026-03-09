@@ -8,8 +8,27 @@ import glob
 from typing import Optional
 
 
+def _load_env_file() -> None:
+    """Load .env file from project root if it exists."""
+    env_path = os.path.join(os.path.dirname(__file__), "..", ".env")
+    env_path = os.path.normpath(env_path)
+    if not os.path.isfile(env_path):
+        return
+    with open(env_path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip("'\"")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+
+
 def get_token() -> str:
-    """Get Tushare Pro API token from environment variable.
+    """Get Tushare Pro API token from environment or .env file.
 
     Returns:
         str: The Tushare API token.
@@ -17,11 +36,13 @@ def get_token() -> str:
     Raises:
         RuntimeError: If TUSHARE_TOKEN is not set.
     """
+    _load_env_file()
     token = os.environ.get("TUSHARE_TOKEN", "")
     if not token:
         raise RuntimeError(
-            "TUSHARE_TOKEN environment variable is not set.\n"
-            "Set it with: export TUSHARE_TOKEN='your_token_here'\n"
+            "TUSHARE_TOKEN is not set.\n"
+            "Option 1: Copy .env.sample to .env and fill in your token\n"
+            "Option 2: export TUSHARE_TOKEN='your_token_here'\n"
             "Get a token at: https://tushare.pro/register"
         )
     return token
@@ -74,13 +95,15 @@ def validate_stock_code(code: str) -> str:
     )
 
 
-def check_local_pdf(stock_code: str, year: int, search_dir: str = ".") -> Optional[str]:
-    """Check if an annual report PDF exists locally.
+def check_local_pdf(stock_code: str, year: int, search_dir: str = ".",
+                    report_type: str = "年报") -> Optional[str]:
+    """Check if a report PDF exists locally.
 
     Args:
         stock_code: Stock code (e.g., '600887' or '600887.SH').
         year: Fiscal year to look for.
         search_dir: Directory to search in.
+        report_type: Type of report to search for ('年报' or '中报').
 
     Returns:
         Path to the PDF if found, None otherwise.
@@ -88,11 +111,20 @@ def check_local_pdf(stock_code: str, year: int, search_dir: str = ".") -> Option
     # Extract numeric part of code
     numeric_code = stock_code.split(".")[0]
 
-    patterns = [
-        f"*{numeric_code}*{year}*.pdf",
-        f"*{numeric_code}*{year}*年报*.pdf",
-        f"{numeric_code}_{year}_*.pdf",
-    ]
+    if report_type == "中报":
+        patterns = [
+            f"*{numeric_code}*{year}*中报*.pdf",
+            f"*{numeric_code}*{year}*半年*.pdf",
+            f"*{numeric_code}*{year}*interim*.pdf",
+            f"*{numeric_code}*{year}*H1*.pdf",
+            f"{numeric_code}_{year}_中报.pdf",
+        ]
+    else:
+        patterns = [
+            f"*{numeric_code}*{year}*.pdf",
+            f"*{numeric_code}*{year}*年报*.pdf",
+            f"{numeric_code}_{year}_*.pdf",
+        ]
 
     for pattern in patterns:
         matches = glob.glob(os.path.join(search_dir, pattern))
@@ -119,8 +151,8 @@ def validate_pdf(filepath: str) -> "tuple[bool, str]":
         return False, f"File too small ({size} bytes), likely not a real annual report"
 
     with open(filepath, "rb") as f:
-        magic = f.read(5)
-        if magic != b"%PDF-":
+        magic = f.read(20)
+        if b"%PDF-" not in magic:
             return False, "File does not start with %PDF- magic bytes"
 
     return True, "Valid PDF"

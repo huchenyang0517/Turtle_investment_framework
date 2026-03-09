@@ -24,6 +24,43 @@ class TestGetToken:
         with pytest.raises(RuntimeError, match="TUSHARE_TOKEN"):
             get_token()
 
+    def test_loads_from_env_file(self, monkeypatch, tmp_path):
+        """get_token() reads from .env file when env var not set."""
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        env_file = tmp_path / ".env"
+        env_file.write_text("TUSHARE_TOKEN=from_env_file\n")
+        monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+        import config as config_mod
+        monkeypatch.setattr(config_mod, "__file__", str(scripts_dir / "config.py"))
+        token = get_token()
+        assert token == "from_env_file"
+        # Clean up so other tests aren't affected
+        monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+
+    def test_env_var_overrides_env_file(self, monkeypatch, tmp_path):
+        """Environment variable takes precedence over .env file."""
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        env_file = tmp_path / ".env"
+        env_file.write_text("TUSHARE_TOKEN=from_file\n")
+        monkeypatch.setenv("TUSHARE_TOKEN", "from_env")
+        import config as config_mod
+        monkeypatch.setattr(config_mod, "__file__", str(scripts_dir / "config.py"))
+        assert get_token() == "from_env"
+
+    def test_env_file_skips_comments(self, monkeypatch, tmp_path):
+        """Comments and blank lines in .env are skipped."""
+        scripts_dir = tmp_path / "scripts"
+        scripts_dir.mkdir()
+        env_file = tmp_path / ".env"
+        env_file.write_text("# This is a comment\n\nTUSHARE_TOKEN=valid_token\n")
+        monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+        import config as config_mod
+        monkeypatch.setattr(config_mod, "__file__", str(scripts_dir / "config.py"))
+        assert get_token() == "valid_token"
+        monkeypatch.delenv("TUSHARE_TOKEN", raising=False)
+
 
 # --- validate_stock_code() ---
 
@@ -111,6 +148,28 @@ class TestCheckLocalPdf:
         pdf = tmp_path / "600887_2023_report.pdf"
         pdf.write_text("fake")
         result = check_local_pdf("600887.SH", 2023, str(tmp_path))
+        assert result is not None
+
+    def test_finds_interim_report(self, tmp_path):
+        """check_local_pdf finds interim report when report_type='中报'."""
+        pdf = tmp_path / "600887_2025_中报.pdf"
+        pdf.write_text("fake")
+        result = check_local_pdf("600887.SH", 2025, str(tmp_path), report_type="中报")
+        assert result is not None
+        assert "中报" in result
+
+    def test_interim_does_not_match_annual(self, tmp_path):
+        """check_local_pdf with report_type='中报' does not match annual reports."""
+        pdf = tmp_path / "600887_2025_年报.pdf"
+        pdf.write_text("fake")
+        result = check_local_pdf("600887.SH", 2025, str(tmp_path), report_type="中报")
+        assert result is None
+
+    def test_finds_interim_h1_pattern(self, tmp_path):
+        """check_local_pdf finds H1-named interim reports."""
+        pdf = tmp_path / "600887_2025_H1.pdf"
+        pdf.write_text("fake")
+        result = check_local_pdf("600887.SH", 2025, str(tmp_path), report_type="中报")
         assert result is not None
 
 

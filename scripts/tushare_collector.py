@@ -609,7 +609,8 @@ class TushareClient:
                                     "rd_exp,current_ratio,quick_ratio,"
                                     "assets_turn,debt_to_assets,"
                                     "revenue_yoy,netprofit_yoy,"
-                                    "ocfps,bps,profit_dedt")
+                                    "ocfps,bps,profit_dedt,"
+                                    "ebitda,fcff,netdebt,interestdebt")
         lines = [format_header(2, "12. 关键财务指标"), ""]
 
         if df.empty:
@@ -870,10 +871,49 @@ class TushareClient:
 
         df = df.sort_values("ann_date", ascending=False)
 
-        # Store for derived metrics
+        # Deduplicate: same repurchase plan appears multiple times at
+        # different progress stages (董事会预案→股东大会通过→实施→完成).
+        # Keep only one record per (ann_date, amount) pair.
+        if "amount" in df.columns:
+            df = df.drop_duplicates(subset=["ann_date", "amount"], keep="first")
+
+        # Filter to executed repurchases only (align with dividend
+        # div_proc=="实施" filtering).  Fall back to deduped full data
+        # if no executed records exist.
+        if "proc" in df.columns:
+            executed = df[df["proc"].isin(["完成", "实施"])]
+            if not executed.empty:
+                df = executed
+
+        # Cross-date dedup: same repurchase plan may appear on different
+        # announcement dates (progress updates).  Deduplicate by plan identity.
+        if all(c in df.columns for c in ["high_limit", "amount", "proc"]):
+            completed = df[df["proc"] == "完成"].copy()
+            executing = df[df["proc"] == "实施"].copy()
+            other = df[~df["proc"].isin(["完成", "实施"])].copy()
+
+            if not completed.empty:
+                completed = completed.drop_duplicates(
+                    subset=["amount", "high_limit"], keep="first")
+            if not executing.empty:
+                executing = executing.sort_values("amount", ascending=False)
+                executing = executing.drop_duplicates(
+                    subset=["high_limit"], keep="first")
+
+            # If a plan already has a 完成 record, drop its 实施 records
+            if not completed.empty and not executing.empty:
+                completed_limits = set(completed["high_limit"].dropna())
+                executing = executing[
+                    ~executing["high_limit"].isin(completed_limits)]
+
+            df = pd.concat(
+                [completed, executing, other]).sort_values(
+                    "ann_date", ascending=False)
+
+        # Store filtered/deduped data for derived metrics (§17.2 O)
         self._store["repurchase"] = df
 
-        headers = ["公告日", "回购金额 (百万元)", "回购股数 (万股)", "价格下限", "价格上限"]
+        headers = ["公告日", "进度", "回购金额 (百万元)", "回购股数 (万股)", "价格下限", "价格上限"]
         rows = []
         total_amount = 0
         for _, r in df.iterrows():
@@ -883,6 +923,7 @@ class TushareClient:
                 total_amount += float(amt)
             rows.append([
                 str(r.get("ann_date", "—")),
+                str(r.get("proc", "—")),
                 format_number(amt),
                 format_number(vol, divider=1e4, decimals=2) if vol is not None and vol == vol else "—",
                 f"{r.get('low_limit', 0):.2f}" if r.get("low_limit") is not None else "—",
@@ -890,12 +931,15 @@ class TushareClient:
             ])
 
         table = format_table(headers, rows,
-                             alignments=["l", "r", "r", "r", "r"])
+                             alignments=["l", "l", "r", "r", "r", "r"])
         lines.append(table)
         lines.append("")
-        lines.append(f"近3年累计回购金额: {format_number(total_amount)} 百万元")
+        lines.append(f"近3年累计回购金额（已去重/仅完成+实施）: {format_number(total_amount)} 百万元")
         years_span = min(3, max(1, len(set(str(r.get("ann_date", ""))[:4] for _, r in df.iterrows()))))
         lines.append(f"年均回购金额: {format_number(total_amount / years_span)} 百万元")
+        lines.append("")
+        lines.append("> ⚠️ 上述金额包含所有用途（注销/员工持股/市值管理）。"
+                     "O 仅计入注销型回购，Phase 3 需核实用途后调整。")
         return "\n".join(lines)
 
     # --- Feature #86: Section 16 — Share pledge statistics ---
@@ -1249,16 +1293,13 @@ class TushareClient:
             summary_rows.append(["M（支付率3年均值）", "—", "分红数据不足"])
             summary_rows.append(["N（支付率3年标准差）", "—", "—"])
 
-        # O = buyback annual average
+        # O = buyback annual average (cancellation-type only)
+        # Tushare does not provide repurchase purpose; default to 0.
+        # Phase 3 should determine cancellation amount from annual report.
         rep_df = self._store.get("repurchase")
         if rep_df is not None and not rep_df.empty:
-            total_amt = 0.0
-            for _, r in rep_df.iterrows():
-                amt = self._safe_float(r.get("amount"))
-                if amt:
-                    total_amt += amt
-            o_avg = total_amt / 3  # always over 3 years per spec
-            summary_rows.append(["O（年均回购金额）", f"{format_number(o_avg)} 百万", "来自 §15 近3年"])
+            summary_rows.append(["O（年均回购金额）", "0.00 百万",
+                                 "默认0（无法区分注销型），Phase 3 从年报确认后填入"])
         else:
             summary_rows.append(["O（年均回购金额）", "0.00 百万", "无回购记录"])
 
@@ -1561,6 +1602,9 @@ class TushareClient:
                 cap_v = self._safe_float(row.get("c_pay_acq_const_fiolta"))
                 if ocf_v is not None and cap_v is not None:
                     fcf_list.append(ocf_v - cap_v)
+            if fcf_list and min(fcf_list) <= 0:
+                lines.append("> ⑤ 悲观FCF资本化：跳过（存在负FCF年份）")
+                lines.append("")
             if fcf_list and min(fcf_list) > 0:
                 min_fcf = min(fcf_list)
                 cap_price = min_fcf / (rf_pct / 100) / total_shares
@@ -1611,6 +1655,125 @@ class TushareClient:
 
         return "\n".join(lines)
 
+    # --- Feature #96: §17.9 Factor 4 earnings decline sensitivity ---
+
+    def _compute_factor4_sensitivity(self, ts_code: str) -> str | None:
+        """Compute §17.9: Earnings decline sensitivity tables.
+
+        Shows how 穿透回报率 and 门槛价格 change under AA decline scenarios.
+        Requires factor3_sensitivity (AA), basic_info (market cap, shares),
+        risk_free_rate (II), dividends+income (M payout ratio).
+        """
+        # Read AA from factor3_sensitivity stored by _compute_factor3_sensitivity_base
+        f3s = self._store.get("factor3_sensitivity")
+        if not f3s:
+            return None
+        aa = f3s.get("aa_selected")
+        if aa is None or aa == 0:
+            return None
+
+        # Read basic_info for market cap and total shares
+        basic_df = self._store.get("basic_info")
+        if basic_df is None or basic_df.empty:
+            return None
+        bi = basic_df.iloc[0]
+        total_mv_wan = self._safe_float(bi.get("total_mv"))  # 万元
+        total_share_wan = self._safe_float(bi.get("total_share"))  # 万股
+        if not total_mv_wan or not total_share_wan or total_share_wan <= 0:
+            return None
+        mkt_cap = total_mv_wan * 10000  # 元（与 aa 同单位）
+        total_shares = total_share_wan * 10000  # 股
+        close = self._safe_float(bi.get("close"))  # 当前股价（元）
+
+        # Read II (threshold) from risk_free_rate
+        rf_df = self._store.get("risk_free_rate")
+        if rf_df is None or rf_df.empty:
+            return None
+        rf_val = self._safe_float(rf_df.iloc[0].get("yield"))
+        if rf_val is None:
+            return None
+        if ts_code.endswith(".HK"):
+            ii = max(5.0, rf_val + 3.0)
+        else:
+            ii = max(3.5, rf_val + 2.0)
+
+        # Read M (payout ratio) — same logic as §17.2
+        income_df = self._get_annual_df("income")
+        div_df = self._store.get("dividends")
+        payout_ratios = []
+        if div_df is not None and not div_df.empty and not income_df.empty:
+            div_lookup = {}
+            for _, r in div_df.iterrows():
+                y = str(r.get("end_date", ""))[:4]
+                cash_div = self._safe_float(r.get("cash_div_tax")) or 0
+                base_share = self._safe_float(r.get("base_share")) or 0
+                div_lookup[y] = cash_div * base_share * 10000
+            years_labels = [str(r["end_date"])[:4] for _, r in income_df.iterrows()]
+            for y in years_labels[:3]:
+                div_total = div_lookup.get(y)
+                for _, r in income_df.iterrows():
+                    if str(r["end_date"])[:4] == y:
+                        np_val = self._safe_float(r.get("n_income_attr_p"))
+                        if div_total and np_val and np_val > 0:
+                            payout_ratios.append(div_total / np_val * 100)
+                        break
+        m_pct = sum(payout_ratios) / len(payout_ratios) if payout_ratios else None
+        if m_pct is None:
+            return None
+
+        # O = repurchase annual average (default 0, same as §17.2)
+        o_val = 0.0
+
+        # Base 穿透回报率
+        gg_base = (aa * m_pct / 100 + o_val) / mkt_cap * 100  # percent
+        threshold_price_base = (aa * m_pct / 100 + o_val) / (ii / 100 * total_shares)
+
+        def _row(label: str, factor: float):
+            aa_new = aa * factor
+            gg = (aa_new * m_pct / 100 + o_val) / mkt_cap * 100
+            vs_threshold = gg - ii
+            tp = (aa_new * m_pct / 100 + o_val) / (ii / 100 * total_shares)
+            vs_price = (tp / close - 1) * 100 if close and close > 0 else 0
+            return [
+                label,
+                format_number(aa_new),
+                f"{gg:.2f}%",
+                f"{vs_threshold:+.2f} pct",
+                f"{tp:.2f}",
+                f"{vs_price:+.1f}%",
+            ]
+
+        lines = [format_header(3, "17.9 因子4·业绩下滑敏感性"), ""]
+        lines.append(f"> AA（真实可支配现金结余）= {format_number(aa)} 百万元，"
+                     f"M = {m_pct:.2f}%，O = {format_number(o_val)}，"
+                     f"II = {ii:.2f}%，市值 = {format_number(mkt_cap / 1e6)} 百万元")
+        lines.append("")
+
+        # Table 1: cumulative 10%/year decline over 1-3 years
+        lines.append("#### 表1：逐年累积下滑（每年-10%）")
+        lines.append("")
+        headers1 = ["情景", "真实可支配现金结余", "穿透回报率", "vs 门槛", "门槛价格（元）", "vs当前股价"]
+        rows1 = [
+            _row("基准", 1.0),
+            _row("下滑1年 (×0.9)", 0.9),
+            _row("下滑2年 (×0.9²)", 0.81),
+            _row("下滑3年 (×0.9³)", 0.729),
+        ]
+        lines.append(format_table(headers1, rows1, alignments=["l", "r", "r", "r", "r", "r"]))
+        lines.append("")
+
+        # Table 2: single-year different decline magnitudes
+        lines.append("#### 表2：单年不同下滑幅度")
+        lines.append("")
+        headers2 = ["下滑幅度", "真实可支配现金结余", "穿透回报率", "门槛价格（元）", "vs当前股价"]
+        rows2 = []
+        for pct, factor in [("-10%", 0.9), ("-20%", 0.8), ("-30%", 0.7)]:
+            r = _row(pct, factor)
+            rows2.append([r[0], r[1], r[2], r[4], r[5]])
+        lines.append(format_table(headers2, rows2, alignments=["l", "r", "r", "r", "r"]))
+
+        return "\n".join(lines)
+
     # --- Feature #92: §17.3-17.5 Factor 3 base case computations ---
 
     def _compute_factor3_step1(self) -> str | None:
@@ -1651,7 +1814,10 @@ class TushareClient:
             bs_prev = bs_by_year[prior_year]
 
             # S = revenue (raw yuan)
-            s = self._safe_float(income_df[income_df["end_date"].str.startswith(year)].iloc[0].get("revenue"))
+            filtered = income_df[income_df["end_date"].str.startswith(year)]
+            if filtered.empty:
+                continue
+            s = self._safe_float(filtered.iloc[0].get("revenue"))
             if s is None:
                 continue
 
@@ -1849,6 +2015,14 @@ class TushareClient:
         positive_surpluses = [s for s in surpluses if s >= 0]
         aa_excl = sum(positive_surpluses) / len(positive_surpluses) if positive_surpluses else aa_incl
 
+        # Store AA values for downstream use (§17.9 sensitivity)
+        aa_selected = aa_excl if (abs(aa_incl - aa_excl) / abs(aa_incl) * 100 > 30 if aa_incl != 0 else False) else aa_incl
+        self._store["factor3_sensitivity"] = {
+            "aa_incl": aa_incl,
+            "aa_excl": aa_excl,
+            "aa_selected": aa_selected,
+        }
+
         # Revenue CV (all available years, not just change-computed years)
         all_revenues = [rev_by_year[y] for y in sorted(rev_by_year.keys()) if rev_by_year[y] > 0]
         cv = None
@@ -1958,6 +2132,7 @@ class TushareClient:
             self._compute_factor4_inputs,
             self._compute_sotp_inputs,
             lambda: self._compute_factor4_ev_baseline(ts_code),
+            lambda: self._compute_factor4_sensitivity(ts_code),
         ]
 
         for method in sub_methods:
@@ -2084,9 +2259,9 @@ class TushareClient:
 
             # Audit risk check
             audit_df = self._safe_call("fina_audit", ts_code=ts_code,
-                                       fields="ts_code,end_date,audit_agency,audit_opinion")
-            if not audit_df.empty and "audit_opinion" in audit_df.columns:
-                wc.check_audit_risk(str(audit_df.iloc[0].get("audit_opinion", "")))
+                                       fields="ts_code,end_date,audit_agency,audit_result")
+            if not audit_df.empty and "audit_result" in audit_df.columns:
+                wc.check_audit_risk(str(audit_df.iloc[0].get("audit_result", "")))
 
             # Balance sheet risk checks (goodwill, debt ratio)
             bs_df = self._safe_call("balancesheet", ts_code=ts_code,
@@ -2114,7 +2289,7 @@ class TushareClient:
                 if items:
                     lines.append(f"**{sev_label}:**")
                     for w in items:
-                        lines.append(f"- [{w['type']}] {w['message']}")
+                        lines.append(f"- [{w['type']}|{w['severity']}] {w['message']}")
                     lines.append("")
         else:
             lines.append("未检测到异常。")
@@ -2150,7 +2325,7 @@ class WarningsCollector:
         """Warn if year-over-year change exceeds threshold (e.g., 300%)."""
         for i in range(len(values) - 1):
             curr, prev = values[i], values[i + 1]
-            if prev and prev != 0 and curr is not None:
+            if prev is not None and curr is not None and float(prev) != 0:
                 try:
                     change = abs(float(curr) / float(prev) - 1)
                     if change > threshold:

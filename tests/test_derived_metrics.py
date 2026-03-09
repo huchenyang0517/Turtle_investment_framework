@@ -53,6 +53,32 @@ def _make_client_with_store():
 
     rep_df = _load_mock("repurchase.json")
     rep_df = rep_df.sort_values("ann_date", ascending=False)
+    # Apply same dedup + status filter as get_repurchase()
+    if "amount" in rep_df.columns:
+        rep_df = rep_df.drop_duplicates(subset=["ann_date", "amount"], keep="first")
+    if "proc" in rep_df.columns:
+        executed = rep_df[rep_df["proc"].isin(["完成", "实施"])]
+        if not executed.empty:
+            rep_df = executed
+    # Cross-date dedup (mirrors get_repurchase logic)
+    if all(c in rep_df.columns for c in ["high_limit", "amount", "proc"]):
+        completed = rep_df[rep_df["proc"] == "完成"].copy()
+        executing = rep_df[rep_df["proc"] == "实施"].copy()
+        other = rep_df[~rep_df["proc"].isin(["完成", "实施"])].copy()
+        if not completed.empty:
+            completed = completed.drop_duplicates(
+                subset=["amount", "high_limit"], keep="first")
+        if not executing.empty:
+            executing = executing.sort_values("amount", ascending=False)
+            executing = executing.drop_duplicates(
+                subset=["high_limit"], keep="first")
+        if not completed.empty and not executing.empty:
+            completed_limits = set(completed["high_limit"].dropna())
+            executing = executing[
+                ~executing["high_limit"].isin(completed_limits)]
+        rep_df = pd.concat(
+            [completed, executing, other]).sort_values(
+                "ann_date", ascending=False)
 
     client._store = {
         "income": income_df,
@@ -237,12 +263,12 @@ class TestFactor2Inputs:
         assert "N（支付率3年标准差）" in result
 
     def test_buyback_annual_avg(self):
-        """O should show average of repurchase amounts / 3."""
+        """O should default to 0 (cannot determine cancellation-type programmatically)."""
         client = _make_client_with_store()
         result = client._compute_factor2_inputs("600887.SH")
         assert "O（年均回购金额）" in result
-        # total = 1500M + 1050M + 1200M = 3750M, avg = 1250M
-        assert "1,250.00" in result
+        assert "0.00" in result
+        assert "默认0" in result
 
     def test_threshold_a_share(self):
         """II for A-share: max(3.5%, Rf+2%)."""

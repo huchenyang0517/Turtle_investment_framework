@@ -10,7 +10,12 @@
     "current_ratio": 1.25,
     "quick_ratio": 0.95,
     "assets_turn": 0.92,
-    "debt_to_assets": 54.11
+    "debt_to_assets": 54.11,
+    "revenue_yoy": 7.12,
+    "netprofit_yoy": 5.71,
+    "ocfps": 2.65,
+    "bps": 9.26,
+    "profit_dedt": 9850000000.00
   },
   {
     "ts_code": "600887.SH",
@@ -23,7 +28,12 @@
     "current_ratio": 1.22,
     "quick_ratio": 0.92,
     "assets_turn": 0.91,
-    "debt_to_assets": 54.30
+    "debt_to_assets": 54.30,
+    "revenue_yoy": -8.95,
+    "netprofit_yoy": 4.82,
+    "ocfps": 2.45,
+    "bps": 8.68,
+    "profit_dedt": 9280000000.00
   },
   {
     "ts_code": "600887.SH",
@@ -36,6 +46,11 @@
     "current_ratio": 1.18,
     "quick_ratio": 0.88,
     "assets_turn": 1.06,
-    "debt_to_assets": 53.00
+    "debt_to_assets": 53.00,
+    "revenue_yoy": 11.38,
+    "netprofit_yoy": 7.41,
+    "ocfps": 2.26,
+    "bps": 8.47,
+    "profit_dedt": 9100000000.00
   }
 ]

@@ -39,6 +39,39 @@ def _get_tushare_client_class():
 
 
 # ============================================================
+# Tier 2 field supersets (union of all consumers per API)
+# ============================================================
+
+_TIER2_FIELDS = {
+    "income": "ts_code,end_date,n_income_attr_p,operate_profit,finance_exp,non_oper_income,oth_income,asset_disp_income",
+    "balancesheet": ("ts_code,end_date,money_cap,trad_asset,st_borr,lt_borr,"
+                     "bond_payable,non_cur_liab_due_1y,goodwill,total_assets,"
+                     "total_hldr_eqy_exc_min_int"),
+    "cashflow": ("ts_code,end_date,n_cashflow_act,c_pay_acq_const_fiolta,"
+                 "depr_fa_coga_dpba,amort_intang_assets,lt_amort_deferred_exp"),
+    "dividend": "ts_code,end_date,cash_div_tax,base_share",
+    "fina_indicator": ("ts_code,end_date,roe_waa,grossprofit_margin,"
+                       "debt_to_assets,profit_dedt"),
+    "fina_audit": "ts_code,end_date,audit_result",
+    "pledge_stat": "ts_code,end_date,pledge_count,pledge_ratio",
+    "weekly": "ts_code,trade_date,close",
+    "yc_cb": "trade_date,yield",
+}
+
+# TTL category for each Tier 2 API
+_TIER2_TTL_CATEGORY = {
+    "income": "financial",
+    "balancesheet": "financial",
+    "cashflow": "financial",
+    "dividend": "financial",
+    "fina_indicator": "financial",
+    "fina_audit": "financial",
+    "pledge_stat": "financial",
+    "weekly": "market",
+    "yc_cb": "global",
+}
+
+# ============================================================
 # Cache
 # ============================================================
 
@@ -66,7 +99,7 @@ class ScreenerCache:
             return None
         try:
             with open(meta_path) as f:
-                ts = float(f.read().strip())
+                ts = float(f.read().strip().split("\n")[0])
             if time.time() - ts > ttl_seconds:
                 return None
             return pd.read_parquet(path)
@@ -80,7 +113,7 @@ class ScreenerCache:
         try:
             df.to_parquet(path, index=False)
             with open(meta_path, "w") as f:
-                f.write(str(time.time()))
+                f.write(f"{time.time()}\n{key}")
         except Exception:
             pass  # cache write failure is non-fatal
 
@@ -89,6 +122,26 @@ class ScreenerCache:
         for p in [self._path(key), self._meta_path(key)]:
             if os.path.exists(p):
                 os.remove(p)
+
+    def invalidate_prefix(self, prefix: str) -> None:
+        """Remove cache entries whose original key starts with prefix."""
+        if not os.path.isdir(self.cache_dir):
+            return
+        for f in os.listdir(self.cache_dir):
+            if not f.endswith(".meta"):
+                continue
+            fp = os.path.join(self.cache_dir, f)
+            try:
+                with open(fp) as fh:
+                    lines = fh.read().strip().split("\n")
+                original_key = lines[1] if len(lines) > 1 else ""
+                if original_key.startswith(prefix):
+                    os.remove(fp)
+                    parquet = fp.replace(".meta", ".parquet")
+                    if os.path.exists(parquet):
+                        os.remove(parquet)
+            except Exception:
+                pass
 
     def clear(self) -> None:
         """Remove all cache entries."""
@@ -113,6 +166,7 @@ class TushareScreener:
         self._pro = None  # lazy init
         self.cache = ScreenerCache(self.config.cache_dir)
         self._rf_cache: float | None = None  # global risk-free rate
+        self._stock_data_cache: dict[str, pd.DataFrame] = {}  # per-stock in-memory cache
 
     def _get_pro(self):
         """Lazy-initialize Tushare pro API."""
@@ -139,21 +193,84 @@ class TushareScreener:
                     time.sleep(1.0 * attempt)
         raise RuntimeError(f"Tushare API '{api_name}' failed after 3 retries: {last_err}")
 
+    def _cached_call(self, api_name: str, ts_code: str | None = None,
+                     **kwargs) -> pd.DataFrame:
+        """Wrapper around _safe_call with in-memory + disk caching.
+
+        Lookup order: memory dict → disk Parquet → API call.
+        Uses _TIER2_FIELDS superset for the API's fields parameter.
+        """
+        # Build cache key
+        if ts_code is not None:
+            cache_key = f"tier2_{ts_code}_{api_name}"
+        else:
+            cache_key = f"global_{api_name}"
+
+        # 1. Check in-memory cache
+        if cache_key in self._stock_data_cache:
+            return self._stock_data_cache[cache_key]
+
+        # 2. Determine TTL
+        category = _TIER2_TTL_CATEGORY.get(api_name, "financial")
+        cfg = self.config
+        if category == "financial":
+            ttl_seconds = cfg.cache_tier2_financial_ttl_hours * 3600
+        elif category == "market":
+            ttl_seconds = cfg.cache_tier2_market_ttl_hours * 3600
+        else:  # global
+            ttl_seconds = cfg.cache_tier2_global_ttl_hours * 3600
+
+        # 3. Check disk cache
+        disk_df = self.cache.get(cache_key, ttl_seconds)
+        if disk_df is not None:
+            self._stock_data_cache[cache_key] = disk_df
+            return disk_df
+
+        # 4. Call API with superset fields
+        call_kwargs = dict(kwargs)
+        if api_name in _TIER2_FIELDS:
+            call_kwargs["fields"] = _TIER2_FIELDS[api_name]
+        if ts_code is not None:
+            call_kwargs["ts_code"] = ts_code
+
+        df = self._safe_call(api_name, **call_kwargs)
+
+        # 5. Cache non-empty results
+        if not df.empty:
+            self._stock_data_cache[cache_key] = df
+            self.cache.put(cache_key, df)
+
+        return df
+
+    def _clear_stock_cache(self, ts_code: str) -> None:
+        """Clear in-memory cache entries for a single stock. Disk cache is preserved."""
+        prefix = f"tier2_{ts_code}_"
+        keys_to_remove = [k for k in self._stock_data_cache if k.startswith(prefix)]
+        for k in keys_to_remove:
+            del self._stock_data_cache[k]
+
     # ---- Tier 1: Bulk data ----
 
     def _get_latest_trade_date(self) -> str:
-        """Get the latest trading date from trade_cal API."""
-        today = datetime.now().strftime("%Y%m%d")
-        # Look back 10 days to find the latest trade date
-        start = (datetime.now() - timedelta(days=10)).strftime("%Y%m%d")
+        """Get the latest trading date with fully-populated daily_basic data.
+
+        Before 19:00, today's data may not be ready (dv_ttm etc. are None),
+        so we use yesterday as the end_date to get the previous trade date.
+        """
+        now = datetime.now()
+        if now.hour < 19:
+            end = (now - timedelta(days=1)).strftime("%Y%m%d")
+        else:
+            end = now.strftime("%Y%m%d")
+        start = (now - timedelta(days=10)).strftime("%Y%m%d")
         df = self._safe_call("trade_cal", exchange="SSE",
-                             start_date=start, end_date=today,
+                             start_date=start, end_date=end,
                              fields="cal_date,is_open")
         if df.empty:
-            return today
+            return end
         open_days = df[df["is_open"] == 1].sort_values("cal_date", ascending=False)
         if open_days.empty:
-            return today
+            return end
         return open_days.iloc[0]["cal_date"]
 
     def _tier1_bulk_data(self, force_refresh: bool = False) -> pd.DataFrame:
@@ -203,6 +320,8 @@ class TushareScreener:
     def _tier1_filter(self, df: pd.DataFrame) -> pd.DataFrame:
         """Apply Tier 1 hard filters. Returns filtered DataFrame with 'channel' column."""
         if df.empty:
+            df = df.copy()
+            df["channel"] = pd.Series(dtype="object")
             return df
 
         cfg = self.config
@@ -211,6 +330,10 @@ class TushareScreener:
         # 1. Remove ST/PT/退市整理
         mask = ~df["name"].str.contains(r"\*ST|ST|PT|退市", na=False, regex=True)
         df = df[mask].copy()
+
+        # 1b. Exclude banks unless include_bank is True
+        if not cfg.include_bank:
+            df = df[df["industry"] != "银行"].copy()
 
         # 2. Listing age >= min_listing_years
         cutoff = (today - timedelta(days=cfg.min_listing_years * 365)).strftime("%Y%m%d")
@@ -228,19 +351,20 @@ class TushareScreener:
         df = df[df["pb"].notna()].copy()
         df = df[(df["pb"] > 0) & (df["pb"] <= cfg.max_pb)].copy()
 
-        # 6. Dividend yield > 0
-        df = df[df["dv_ttm"].notna()].copy()
-        df = df[df["dv_ttm"] > 0].copy()
-
-        # 7. Dual-channel PE
+        # 6. Dual-channel PE split (before dividend filter)
+        #    Tushare returns NaN pe_ttm for loss-making stocks (not negative)
         pe_valid = df["pe_ttm"].notna()
         main_mask = pe_valid & (df["pe_ttm"] > 0) & (df["pe_ttm"] <= cfg.max_pe)
-        obs_mask = pe_valid & (df["pe_ttm"] < 0)
+        obs_mask = ~pe_valid  # NaN PE = loss-making → observation channel
 
         main_df = df[main_mask].copy()
+        obs_df = df[obs_mask].copy()
+
+        # 7. Dividend yield > 0 — main channel only
+        main_df = main_df[main_df["dv_ttm"].notna() & (main_df["dv_ttm"] > 0)].copy()
         main_df["channel"] = "main"
 
-        obs_df = df[obs_mask].copy()
+        # 8. Observation channel: top N by market cap (no dividend requirement)
         obs_df = obs_df.sort_values("total_mv", ascending=False).head(cfg.obs_channel_limit)
         obs_df["channel"] = "observation"
 
@@ -311,8 +435,7 @@ class TushareScreener:
 
         # Check pledge ratio
         try:
-            pledge_df = self._safe_call("pledge_stat", ts_code=ts_code,
-                                        fields="ts_code,end_date,pledge_count,pledge_ratio")
+            pledge_df = self._cached_call("pledge_stat", ts_code=ts_code)
             if not pledge_df.empty:
                 pledge_df = pledge_df.sort_values("end_date", ascending=False)
                 ratio = pledge_df.iloc[0].get("pledge_ratio")
@@ -324,8 +447,7 @@ class TushareScreener:
 
         # Check audit opinion
         try:
-            audit_df = self._safe_call("fina_audit", ts_code=ts_code,
-                                       fields="ts_code,end_date,audit_result")
+            audit_df = self._cached_call("fina_audit", ts_code=ts_code)
             if not audit_df.empty:
                 audit_df = audit_df.sort_values("end_date", ascending=False)
                 result = audit_df.iloc[0].get("audit_result", "")
@@ -348,11 +470,7 @@ class TushareScreener:
         metrics: dict[str, Any] = {}
 
         try:
-            fi_df = self._safe_call(
-                "fina_indicator", ts_code=ts_code,
-                fields="ts_code,end_date,roe_waa,grossprofit_margin,"
-                       "debt_to_assets,profit_dedt"
-            )
+            fi_df = self._cached_call("fina_indicator", ts_code=ts_code)
         except Exception:
             return False, metrics
 
@@ -398,12 +516,14 @@ class TushareScreener:
                                  ) -> dict[str, Any]:
         """Extract Factor 2 metrics: payout ratio M, penetration return R, threshold II.
 
+        R = AA × M / 市值, where AA = 真实可支配现金结余 ≈ OCF + V1 - V_deduct - |Capex|.
+
         Args:
             ts_code: Stock code.
             total_mv_wan: Total market value in 万元.
 
         Returns:
-            Dict with keys: M, R, II, Rf, R_vs_II (pass/marginal/fail/below_rf).
+            Dict with keys: AA, M, R, II, Rf, R_vs_II (pass/marginal/fail/below_rf).
         """
         result: dict[str, Any] = {}
         mkt_cap = total_mv_wan * 10000 / 1e6  # 百万元
@@ -411,10 +531,7 @@ class TushareScreener:
         # Get risk-free rate (cached globally)
         if self._rf_cache is None:
             try:
-                rf_df = self._safe_call(
-                    "yc_cb", curve_type="0",
-                    fields="trade_date,yield"
-                )
+                rf_df = self._cached_call("yc_cb", ts_code=None, curve_type="0")
                 if not rf_df.empty:
                     rf_df = rf_df.sort_values("trade_date", ascending=False)
                     self._rf_cache = float(rf_df.iloc[0]["yield"])
@@ -430,18 +547,18 @@ class TushareScreener:
         else:
             result["II"] = None
 
-        # Get income and dividend data
+        # Get income, dividend, and cashflow data
         try:
-            income_df = self._safe_call(
-                "income", ts_code=ts_code, report_type="1",
-                fields="ts_code,end_date,n_income_attr_p"
-            )
-            div_df = self._safe_call(
-                "dividend", ts_code=ts_code,
-                fields="ts_code,end_date,cash_div_tax,base_share"
-            )
+            income_df = self._cached_call("income", ts_code=ts_code,
+                                          report_type="1")
+            div_df = self._cached_call("dividend", ts_code=ts_code)
         except Exception:
             return result
+
+        try:
+            cf_df = self._cached_call("cashflow", ts_code=ts_code)
+        except Exception:
+            cf_df = pd.DataFrame()
 
         if income_df.empty:
             return result
@@ -486,19 +603,45 @@ class TushareScreener:
         else:
             result["M"] = None
 
-        # Latest C (归母净利润, 百万元)
-        latest_c = annual_inc.iloc[0].get("n_income_attr_p") if not annual_inc.empty else None
-        if latest_c is not None:
-            try:
-                C = float(latest_c) / 1e6
-            except (ValueError, TypeError):
-                C = None
-        else:
-            C = None
+        # AA = 真实可支配现金结余 (latest 1 year)
+        # AA ≈ OCF + V1(资产处置) - V_deduct(补贴等) - |Capex|
+        AA = None
+        if not cf_df.empty and not annual_inc.empty:
+            cf_sorted = cf_df.sort_values("end_date", ascending=False)
+            annual_cf = cf_sorted[cf_sorted["end_date"].str.endswith("1231")]
+            if not annual_cf.empty:
+                latest_year = str(annual_cf.iloc[0]["end_date"])[:4]
+                cf_row = annual_cf.iloc[0]
 
-        # R = C × M / market_cap
-        if C is not None and result.get("M") is not None and mkt_cap > 0:
-            R = C * (result["M"] / 100) / mkt_cap * 100  # percentage
+                # Find matching income row for same year
+                inc_row = None
+                for _, r in annual_inc.iterrows():
+                    if str(r["end_date"])[:4] == latest_year:
+                        inc_row = r
+                        break
+
+                if inc_row is not None:
+                    ocf_raw = cf_row.get("n_cashflow_act")
+                    ocf = float(ocf_raw) if ocf_raw is not None and pd.notna(ocf_raw) else None
+                    capex_raw = cf_row.get("c_pay_acq_const_fiolta")
+                    capex = abs(float(capex_raw)) if capex_raw is not None and pd.notna(capex_raw) else 0
+
+                    v1_raw = inc_row.get("asset_disp_income")
+                    v1 = float(v1_raw) if v1_raw is not None and pd.notna(v1_raw) else 0
+                    noi_raw = inc_row.get("non_oper_income")
+                    noi = float(noi_raw) if noi_raw is not None and pd.notna(noi_raw) else 0
+                    oi_raw = inc_row.get("oth_income")
+                    oi = float(oi_raw) if oi_raw is not None and pd.notna(oi_raw) else 0
+                    v_deduct = noi + oi
+
+                    if ocf is not None:
+                        AA = (ocf + v1 - v_deduct - capex) / 1e6  # 百万元
+
+        result["AA"] = AA
+
+        # R = AA × M / mkt_cap  (O=0, 无法区分回购用途)
+        if AA is not None and result.get("M") is not None and mkt_cap > 0:
+            R = AA * (result["M"] / 100) / mkt_cap * 100  # percentage
             result["R"] = R
         else:
             result["R"] = None
@@ -536,21 +679,11 @@ class TushareScreener:
         mkt_cap = total_mv_wan * 10000 / 1e6  # 百万元
 
         try:
-            income_df = self._safe_call(
-                "income", ts_code=ts_code, report_type="1",
-                fields="ts_code,end_date,operate_profit,finance_exp,n_income_attr_p"
-            )
-            bs_df = self._safe_call(
-                "balancesheet", ts_code=ts_code, report_type="1",
-                fields="ts_code,end_date,money_cap,trad_asset,st_borr,lt_borr,"
-                       "bond_payable,non_cur_liab_due_1y,goodwill,total_assets,"
-                       "total_hldr_eqy_exc_min_int"
-            )
-            cf_df = self._safe_call(
-                "cashflow", ts_code=ts_code,
-                fields="ts_code,end_date,n_cashflow_act,c_pay_acq_const_fiolta,"
-                       "depr_fa_coga_dpba,amort_intang_assets,lt_amort_deferred_exp"
-            )
+            income_df = self._cached_call("income", ts_code=ts_code,
+                                          report_type="1")
+            bs_df = self._cached_call("balancesheet", ts_code=ts_code,
+                                      report_type="1")
+            cf_df = self._cached_call("cashflow", ts_code=ts_code)
         except Exception:
             return result
 
@@ -678,23 +811,11 @@ class TushareScreener:
         total_shares = total_mv_wan * 10000 / close if close > 0 else 0  # 股
 
         try:
-            bs_df = self._safe_call(
-                "balancesheet", ts_code=ts_code, report_type="1",
-                fields="ts_code,end_date,money_cap,trad_asset,st_borr,lt_borr,"
-                       "bond_payable,non_cur_liab_due_1y,total_hldr_eqy_exc_min_int"
-            )
-            cf_df = self._safe_call(
-                "cashflow", ts_code=ts_code,
-                fields="ts_code,end_date,n_cashflow_act,c_pay_acq_const_fiolta"
-            )
-            weekly_df = self._safe_call(
-                "weekly", ts_code=ts_code,
-                fields="ts_code,trade_date,close"
-            )
-            div_df = self._safe_call(
-                "dividend", ts_code=ts_code,
-                fields="ts_code,end_date,cash_div_tax"
-            )
+            bs_df = self._cached_call("balancesheet", ts_code=ts_code,
+                                      report_type="1")
+            cf_df = self._cached_call("cashflow", ts_code=ts_code)
+            weekly_df = self._cached_call("weekly", ts_code=ts_code)
+            div_df = self._cached_call("dividend", ts_code=ts_code)
         except Exception:
             return result
 
@@ -813,6 +934,7 @@ class TushareScreener:
         passed, reason = self._check_hard_vetoes(ts_code)
         if not passed:
             result["veto"] = reason
+            self._clear_stock_cache(ts_code)
             return None
 
         # Step 2: Financial quality
@@ -820,6 +942,7 @@ class TushareScreener:
         result.update(fq_metrics)
         if not fq_passed:
             result["veto"] = "financial_quality"
+            self._clear_stock_cache(ts_code)
             return None
 
         # Step 3: Factor 2 (penetration return)
@@ -844,6 +967,7 @@ class TushareScreener:
         result["floor_baseline"] = fp.get("composite_baseline")
         result["floor_premium"] = fp.get("premium")
 
+        self._clear_stock_cache(ts_code)
         return result
 
     # ---- Scoring ----
@@ -1023,6 +1147,8 @@ def main():
                         help="Output directory (default: output/)")
     parser.add_argument("--cache-refresh", action="store_true",
                         help="Force refresh all cached data")
+    parser.add_argument("--cache-tier2-refresh", action="store_true",
+                        help="Clear Tier 2 per-stock disk cache (keep Tier 1)")
 
     args = parser.parse_args()
 
@@ -1041,6 +1167,9 @@ def main():
 
     if args.cache_refresh:
         screener.cache.clear()
+    elif args.cache_tier2_refresh:
+        screener.cache.invalidate_prefix("tier2_")
+        screener.cache.invalidate_prefix("global_")
 
     # Run
     try:

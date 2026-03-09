@@ -93,7 +93,10 @@ SECTION_KEYWORDS: Dict[str, List[str]] = {
         "承諾及或有事項",
     ],
     "P13": [
-        # Simplified Chinese
+        # Simplified Chinese - specific (prefer these for supplement zone)
+        "非经常性损益项目及金额",
+        "非经常性损益合计",
+        # Simplified Chinese - general
         "非经常性损益",
         "非经常性损益明细",
         "非经常性损益项目",
@@ -102,6 +105,7 @@ SECTION_KEYWORDS: Dict[str, List[str]] = {
         # Traditional Chinese
         "非經常性損益",
         "非經常性損益明細",
+        "非經常性損益項目及金額",
     ],
     "MDA": [
         # Simplified Chinese
@@ -116,21 +120,25 @@ SECTION_KEYWORDS: Dict[str, List[str]] = {
         "董事會報告",
     ],
     "SUB": [
-        # Simplified Chinese
+        # 高特异性 — 主匹配
         "主要控股参股公司分析",
         "主要子公司及对公司净利润的影响",
-        "长期股权投资",
-        "合并范围的变化",
-        "纳入合并范围的主体",
+        "主要控股参股公司情况",
+        "控股子公司情况",
+        # 中特异性
         "在子公司中的权益",
         "在其他主体中的权益",
-        "控股子公司情况",
-        "主要控股参股公司情况",
-        # Traditional Chinese
+        "纳入合并范围的主体",
+        "合并范围的变化",
+        # 删除: "长期股权投资" (歧义太大，匹配到 Note #17)
+        # 新增: 更具体的变体
+        "长期股权投资——对子公司",
+        "长期股权投资——联营企业",
+        # 繁体
         "主要控股參股公司分析",
-        "長期股權投資",
         "在子公司中的權益",
         "在其他主體中的權益",
+        "長期股權投資——對子公司",
     ],
 }
 
@@ -141,6 +149,34 @@ SECTION_EXTRACT_CONFIG: Dict[str, Dict[str, int]] = {
 }
 DEFAULT_BUFFER_PAGES = 1
 DEFAULT_MAX_CHARS = 4000
+
+# ---------------------------------------------------------------------------
+# Zone detection markers for A-share annual reports (CSRC format)
+# ---------------------------------------------------------------------------
+
+ZONE_MARKERS: List[Tuple[str, str]] = [
+    (r"第[一二三四五六七八九十百]+节\s*重要提示", "INTRO_ZONE"),
+    (r"第[一二三四五六七八九十百]+节\s*公司简介", "INTRO_ZONE"),
+    (r"第[一二三四五六七八九十百]+节\s*管理层讨论与分析", "MDA_ZONE"),
+    (r"第[一二三四五六七八九十百]+节\s*经营情况讨论与分析", "MDA_ZONE"),
+    (r"第[一二三四五六七八九十百]+节\s*公司治理", "GOVERNANCE_ZONE"),
+    (r"第[一二三四五六七八九十百]+节\s*财务报告", "FIN_ZONE"),
+    (r"第[一二三四五六七八九十百]+节\s*会计数据", "FIN_ZONE"),
+    # Sub-zones within financial report
+    (r"[四五六]\s*[、.．]\s*重要会计政策", "POLICY_ZONE"),
+    (r"七\s*[、.．]\s*合并财务报表项目注释", "NOTES_ZONE"),
+    (r"[一二三四五六七八九十]+[、.．]\s*补充资料", "SUPPLEMENT_ZONE"),
+]
+
+SECTION_ZONE_PREFERENCES: Dict[str, Dict[str, List[str]]] = {
+    "P2":  {"prefer": ["NOTES_ZONE"], "avoid": ["POLICY_ZONE"]},
+    "P3":  {"prefer": ["NOTES_ZONE"], "avoid": ["POLICY_ZONE"]},
+    "P4":  {"prefer": ["NOTES_ZONE"], "avoid": ["POLICY_ZONE"]},
+    "P6":  {"prefer": ["NOTES_ZONE"], "avoid": ["POLICY_ZONE"]},
+    "P13": {"prefer": ["SUPPLEMENT_ZONE", "NOTES_ZONE"], "avoid": ["POLICY_ZONE"]},
+    "MDA": {"prefer": ["MDA_ZONE"], "avoid": ["NOTES_ZONE", "FIN_ZONE", "POLICY_ZONE", "SUPPLEMENT_ZONE"]},
+    "SUB": {"prefer": ["NOTES_ZONE"], "avoid": ["POLICY_ZONE"]},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -292,25 +328,79 @@ def fallback_extract_pymupdf(pdf_path: str, verbose: bool = False) -> Optional[L
 
 
 # ---------------------------------------------------------------------------
+# Zone detection for A-share annual report structure
+# ---------------------------------------------------------------------------
+
+def detect_zones(pages_text: List[Tuple[int, str]]) -> Dict[int, str]:
+    """Detect report structure zones by scanning for section markers.
+
+    Returns:
+        Dict mapping page_number -> zone_name. Pages without a detected
+        zone inherit from the most recent zone marker before them.
+        Returns empty dict if no zone markers are found.
+    """
+    zone_transitions: List[Tuple[int, str]] = []
+
+    for page_num, text in pages_text:
+        if not text:
+            continue
+        for pattern, zone_name in ZONE_MARKERS:
+            if re.search(pattern, text):
+                zone_transitions.append((page_num, zone_name))
+                break  # first matching marker per page
+
+    if not zone_transitions:
+        return {}
+
+    # Build page->zone mapping (each page inherits from last marker)
+    zone_transitions.sort(key=lambda x: x[0])
+    page_zones: Dict[int, str] = {}
+    current_zone = None
+    transition_idx = 0
+
+    for page_num, _ in pages_text:
+        while transition_idx < len(zone_transitions) and zone_transitions[transition_idx][0] <= page_num:
+            current_zone = zone_transitions[transition_idx][1]
+            transition_idx += 1
+        if current_zone:
+            page_zones[page_num] = current_zone
+
+    return page_zones
+
+
+# ---------------------------------------------------------------------------
 # Feature #39: Keyword matching to locate sections
 # Feature #46: Section priority scoring
 # ---------------------------------------------------------------------------
 
-def _score_match(page_num: int, total_pages: int, text: str, keyword: str) -> float:
-    """Score a keyword match: prefer financial notes section over TOC.
+def _score_match(
+    page_num: int, total_pages: int, text: str, keyword: str,
+    zone: Optional[str] = None, section_id: Optional[str] = None,
+) -> float:
+    """Score a keyword match: prefer correct report zone over TOC.
 
     Scoring:
         +1.0 base for a match
-        +0.5 if page is in the last 70% of document (financial notes area)
+        +2.0 if page is in a preferred zone for this section
+        -2.0 if page is in an avoided zone for this section
+        +0.5 fallback position bonus if no zone info available
         -0.5 if page looks like TOC (contains "目录" or "目 录")
         +0.3 if keyword appears in a heading-like context (numbered section)
         -0.3 if keyword only appears as a cross-reference ("详见")
     """
     score = 1.0
 
-    # Page position: prefer second half / last 70%
-    if total_pages > 0 and page_num / total_pages > 0.30:
-        score += 0.5
+    # Zone-aware scoring (replaces position bonus when zone info available)
+    if zone and section_id and section_id in SECTION_ZONE_PREFERENCES:
+        prefs = SECTION_ZONE_PREFERENCES[section_id]
+        if zone in prefs.get("prefer", []):
+            score += 2.0
+        elif zone in prefs.get("avoid", []):
+            score -= 2.0
+    elif total_pages > 0:
+        # Fallback: position-based scoring when no zone info
+        if page_num / total_pages > 0.30:
+            score += 0.5
 
     # Penalize TOC pages
     if "目录" in text or "目 录" in text:
@@ -322,6 +412,18 @@ def _score_match(page_num: int, total_pages: int, text: str, keyword: str) -> fl
         before = text[max(0, kw_pos - 30):kw_pos]
         if "详见" in before or "参见" in before or "参照" in before:
             score -= 0.3
+
+    # SUB context scoring: penalize accounting detail, reward subsidiary operating data
+    if section_id == "SUB" and kw_pos >= 0:
+        context_window = text[max(0, kw_pos - 200):min(len(text), kw_pos + 200)]
+        # Penalize: accounting detail context
+        acct = ["权益法", "账面余额", "减值准备", "成本法", "账面价值"]
+        if sum(1 for a in acct if a in context_window) >= 2:
+            score -= 1.5
+        # Reward: subsidiary operating data context
+        subs = ["主营业务", "营业收入", "净利润", "注册资本", "持股比例"]
+        if sum(1 for s in subs if s in context_window) >= 2:
+            score += 1.0
 
     # Bonus: keyword appears near a numbered heading pattern
     # e.g., "31、所有权或使用权受限资产" or "十四、关联方及关联交易"
@@ -356,6 +458,9 @@ def find_section_pages(
     total_pages = len(pages_text)
     results: Dict[str, List[int]] = {}
 
+    # Detect zones for scoring
+    page_zones = detect_zones(pages_text)
+
     for section_id, keywords in section_keywords.items():
         # Collect (score, page_num) for all matches
         scored_matches: List[Tuple[float, int]] = []
@@ -365,7 +470,9 @@ def find_section_pages(
                 continue
             for kw in keywords:
                 if kw in text:
-                    score = _score_match(page_num, total_pages, text, kw)
+                    zone = page_zones.get(page_num)
+                    score = _score_match(page_num, total_pages, text, kw,
+                                         zone=zone, section_id=section_id)
                     scored_matches.append((score, page_num))
                     break  # one keyword per page is enough
 
@@ -564,6 +671,11 @@ Examples:
         help="Output JSON file path (default: output/pdf_sections.json)",
     )
     parser.add_argument(
+        "--hints",
+        default=None,
+        help="Path to toc_hints.json (optional, from Phase 2A.5 TOC analysis)",
+    )
+    parser.add_argument(
         "--verbose",
         action="store_true",
         help="Print progress messages during extraction",
@@ -576,13 +688,34 @@ Examples:
     return parser.parse_args(args)
 
 
-def run_pipeline(pdf_path: str, output_path: str, verbose: bool = False) -> dict:
+def _load_hints(hints_path: Optional[str]) -> Dict[str, dict]:
+    """Load TOC hints from JSON file.
+
+    Args:
+        hints_path: Path to toc_hints.json or None.
+
+    Returns:
+        Dict mapping section_id -> {"page": int, "title": str} or empty dict.
+    """
+    if not hints_path or not os.path.exists(hints_path):
+        return {}
+    try:
+        with open(hints_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError) as e:
+        print(f"Warning: Failed to load hints file '{hints_path}': {e}", file=sys.stderr)
+        return {}
+
+
+def run_pipeline(pdf_path: str, output_path: str, verbose: bool = False,
+                 hints_path: Optional[str] = None) -> dict:
     """Run the full extraction pipeline.
 
     Args:
         pdf_path: Path to the PDF.
         output_path: Path for JSON output.
         verbose: Print progress.
+        hints_path: Optional path to toc_hints.json for TOC-based page overrides.
 
     Returns:
         The output dict written to JSON.
@@ -611,9 +744,23 @@ def run_pipeline(pdf_path: str, output_path: str, verbose: bool = False) -> dict
 
     print(f"  Extracted {total_pages} pages")
 
+    # Load TOC hints (Phase 2A.5)
+    hints = _load_hints(hints_path)
+    if hints and verbose:
+        print(f"  Loaded TOC hints for: {list(hints.keys())}")
+
     # Step 2: Find section pages via keyword matching
     print("[2/4] Scanning for target sections...")
     section_pages = find_section_pages(pages_text)
+
+    # Apply hints: override keyword-matched pages with TOC hint pages
+    for sid, hint in hints.items():
+        if sid in section_pages and "page" in hint:
+            hint_page = hint["page"]
+            if 1 <= hint_page <= total_pages:
+                section_pages[sid] = [hint_page]
+                if verbose:
+                    print(f"  {sid}: overridden by hint → page {hint_page}")
 
     if verbose:
         for sid, pages in section_pages.items():
@@ -644,11 +791,13 @@ def main():
         print("=== Dry Run ===")
         print(f"  PDF: {args.pdf}")
         print(f"  Output: {args.output}")
+        print(f"  Hints: {args.hints}")
         print(f"  Verbose: {args.verbose}")
         return
 
     try:
-        result = run_pipeline(args.pdf, args.output, verbose=args.verbose)
+        result = run_pipeline(args.pdf, args.output, verbose=args.verbose,
+                              hints_path=args.hints)
         found = result["metadata"]["sections_found"]
         total = result["metadata"]["sections_total"]
         print(f"Extracted {found}/{total} sections -> {args.output}")

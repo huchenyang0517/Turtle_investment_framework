@@ -56,3 +56,11 @@ integration = pytest.mark.skipif(
     not os.environ.get("TUSHARE_TOKEN"),
     reason="TUSHARE_TOKEN not set, skipping integration test",
 )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_env_file(monkeypatch, tmp_path):
+    """Prevent _load_env_file from finding the real .env during tests."""
+    import config as config_mod
+
+    monkeypatch.setattr(config_mod, "__file__", str(tmp_path / "scripts" / "config.py"))
