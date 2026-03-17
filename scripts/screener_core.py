@@ -39,6 +39,58 @@ def _get_tushare_client_class():
 
 
 # ============================================================
+# Column name mapping: English → Chinese
+# ============================================================
+
+_COLUMN_NAMES_CN: dict[str, str] = {
+    "ts_code": "股票代码",
+    "name": "股票名称",
+    "industry": "行业",
+    "channel": "通道",
+    "close": "收盘价",
+    "total_mv": "总市值(万元)",
+    "pe_ttm": "市盈率(TTM)",
+    "pb": "市净率",
+    "dv_ttm": "股息率(TTM%)",
+    "tier1_score": "Tier1得分",
+    "roe_waa": "加权ROE(%)",
+    "gross_margin": "毛利率(%)",
+    "debt_to_assets": "资产负债率(%)",
+    "profit_dedt": "扣非净利润",
+    "M": "分配意愿M(%)",
+    "R": "穿透率R(%)",
+    "II": "门槛II(%)",
+    "Rf": "无风险利率(%)",
+    "R_vs_II": "R与II对比",
+    "ev_ebitda": "EV/EBITDA",
+    "cash_adj_pe": "现金调整PE",
+    "fcf_yield": "FCF收益率(%)",
+    "net_debt_ebitda": "净负债/EBITDA",
+    "goodwill_ratio": "商誉占比(%)",
+    "fcf_consistency": "FCF稳定性",
+    "floor_baseline": "底价基准(元)",
+    "floor_premium": "底价溢价率(%)",
+    "composite_score": "综合得分",
+    "roe_waa_pctile": "ROE百分位",
+    "fcf_yield_pctile": "FCF收益率百分位",
+    "R_pctile": "穿透率百分位",
+    "ev_ebitda_pctile": "EV/EBITDA百分位",
+    "floor_premium_pctile": "底价溢价率百分位",
+    "list_date": "上市日期",
+    "area": "地区",
+    "market": "市场",
+    "trade_date": "交易日期",
+    "turnover_rate": "换手率(%)",
+    "circ_mv": "流通市值(万元)",
+}
+
+
+def _rename_columns_cn(df: pd.DataFrame) -> pd.DataFrame:
+    """Rename DataFrame columns from English to Chinese using _COLUMN_NAMES_CN."""
+    return df.rename(columns={k: v for k, v in _COLUMN_NAMES_CN.items() if k in df.columns})
+
+
+# ============================================================
 # Tier 2 field supersets (union of all consumers per API)
 # ============================================================
 
@@ -1106,9 +1158,9 @@ class TushareScreener:
     # ---- Export ----
 
     def export_csv(self, df: pd.DataFrame, path: str) -> None:
-        """Export results to CSV."""
+        """Export results to CSV with Chinese column names."""
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        df.to_csv(path, index=False, encoding="utf-8-sig")
+        _rename_columns_cn(df).to_csv(path, index=False, encoding="utf-8-sig")
         print(f"Exported to {path}")
 
     def export_html(self, df: pd.DataFrame, path: str) -> None:
@@ -1122,7 +1174,7 @@ class TushareScreener:
             "floor_premium", "composite_score"
         ] if c in df.columns]
 
-        display_df = df[display_cols].copy()
+        display_df = _rename_columns_cn(df[display_cols].copy())
 
         html = display_df.to_html(index=False, float_format="%.2f",
                                   classes="screener-table")
@@ -1233,7 +1285,7 @@ def main():
         "ts_code", "name", "industry", "composite_score", "roe_waa",
         "fcf_yield", "R", "ev_ebitda", "floor_premium"
     ] if c in result.columns]
-    print("\n" + result[display_cols].head(20).to_string(index=False))
+    print("\n" + _rename_columns_cn(result[display_cols].head(20)).to_string(index=False))
 
     # Export
     output_dir = args.output or "output"
