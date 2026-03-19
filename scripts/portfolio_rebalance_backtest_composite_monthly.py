@@ -45,9 +45,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--rebalance-freq",
-        choices=["monthly", "weekly", "daily"],
+        choices=["quarterly", "monthly", "weekly", "daily"],
         default="monthly",
-        help="Evaluation frequency: 'monthly' = month-end; 'weekly' = week-end (Friday); 'daily' = every trading day.",
+        help="Evaluation frequency: 'quarterly' = quarter-end; 'monthly' = month-end; 'weekly' = week-end; 'daily' = every trading day.",
     )
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--initial-capital", type=float, default=1_000_000.0)
@@ -197,6 +197,28 @@ def _month_end_trade_days(
     month_ends = cal.groupby("ym", as_index=False).apply(lambda g: g.iloc[-1])
     month_ends = month_ends.sort_values("cal_date")
     return [d.date() for d in month_ends["cal_date"]]
+
+
+def _quarter_end_trade_days(
+    pro: ts.pro_api,
+    exchange: str,
+    start_date: dt.date,
+    end_date: dt.date,
+) -> List[dt.date]:
+    cal = pro.trade_cal(
+        exchange=exchange,
+        start_date=_ymd(start_date),
+        end_date=_ymd(end_date),
+        fields="cal_date,is_open",
+    )
+    if cal is None or cal.empty:
+        return []
+    cal["cal_date"] = pd.to_datetime(cal["cal_date"])
+    cal = cal[cal["is_open"] == 1].sort_values("cal_date")
+    cal["yq"] = cal["cal_date"].dt.to_period("Q").astype(str)
+    quarter_ends = cal.groupby("yq", as_index=False).apply(lambda g: g.iloc[-1])
+    quarter_ends = quarter_ends.sort_values("cal_date")
+    return [d.date() for d in quarter_ends["cal_date"]]
 
 
 def _week_end_trade_days(
@@ -407,7 +429,9 @@ def main() -> None:
     freq = args.rebalance_freq  # "monthly" or "daily"
     freq_tag = freq
 
-    if freq == "monthly":
+    if freq == "quarterly":
+        eval_days = _quarter_end_trade_days(pro, exchange="SSE", start_date=start_dt, end_date=end_dt)
+    elif freq == "monthly":
         eval_days = _month_end_trade_days(pro, exchange="SSE", start_date=start_dt, end_date=end_dt)
     elif freq == "weekly":
         eval_days = _week_end_trade_days(pro, exchange="SSE", start_date=start_dt, end_date=end_dt)
