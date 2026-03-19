@@ -235,7 +235,7 @@ class TushareScreener:
         last_err = None
         for attempt in range(1, 4):
             try:
-                time.sleep(0.5)
+                time.sleep(self.config.api_sleep_seconds)
                 api_func = getattr(pro, api_name)
                 return api_func(**kwargs)
             except Exception as e:
@@ -326,14 +326,14 @@ class TushareScreener:
             return end
         return open_days.iloc[0]["cal_date"]
 
-    def _tier1_bulk_data(self, force_refresh: bool = False) -> pd.DataFrame:
+    def _tier1_bulk_data(self, force_refresh: bool = False, trade_date: str | None = None) -> pd.DataFrame:
         """Fetch full A-share universe: stock_basic + daily_basic merged.
 
         Returns merged DataFrame with columns from both APIs.
         Uses cache with configurable TTL.
         """
         cfg = self.config
-        trade_date = self._get_latest_trade_date()
+        trade_date = trade_date or self._get_latest_trade_date()
 
         # --- stock_basic ---
         sb_key = "stock_basic_all"
@@ -370,7 +370,7 @@ class TushareScreener:
 
     # ---- Tier 1: Filter ----
 
-    def _tier1_filter(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _tier1_filter(self, df: pd.DataFrame, as_of: datetime | None = None) -> pd.DataFrame:
         """Apply Tier 1 hard filters. Returns filtered DataFrame with 'channel' column."""
         if df.empty:
             df = df.copy()
@@ -378,7 +378,7 @@ class TushareScreener:
             return df
 
         cfg = self.config
-        today = datetime.now()
+        today = as_of or datetime.now()
 
         # 1. Remove ST/PT/退市整理
         mask = ~df["name"].str.contains(r"\*ST|ST|PT|退市", na=False, regex=True)
@@ -1091,8 +1091,14 @@ class TushareScreener:
 
     # ---- Pipeline ----
 
-    def run(self, tier1_only: bool = False, tier2_limit: int | None = None,
-            progress_callback=None) -> pd.DataFrame:
+    def run(
+        self,
+        tier1_only: bool = False,
+        tier2_limit: int | None = None,
+        progress_callback=None,
+        trade_date: str | None = None,
+        verbose: bool = True,
+    ) -> pd.DataFrame:
         """Run full screening pipeline.
 
         Args:
@@ -1104,17 +1110,27 @@ class TushareScreener:
             DataFrame with screening results.
         """
         # Tier 1
-        print("=== Tier 1: Bulk screening ===")
-        bulk_df = self._tier1_bulk_data()
-        print(f"  Universe: {len(bulk_df)} stocks")
+        if verbose:
+            print("=== Tier 1: Bulk screening ===")
+        as_of_dt: datetime | None = None
+        if trade_date:
+            as_of_dt = datetime.strptime(trade_date, "%Y%m%d")
 
-        filtered = self._tier1_filter(bulk_df)
-        print(f"  After filters: {len(filtered)} stocks "
-              f"(main: {len(filtered[filtered['channel']=='main'])}, "
-              f"observation: {len(filtered[filtered['channel']=='observation'])})")
+        bulk_df = self._tier1_bulk_data(trade_date=trade_date)
+        if verbose:
+            print(f"  Universe: {len(bulk_df)} stocks")
+
+        filtered = self._tier1_filter(bulk_df, as_of=as_of_dt)
+        if verbose:
+            print(
+                f"  After filters: {len(filtered)} stocks "
+                f"(main: {len(filtered[filtered['channel']=='main'])}, "
+                f"observation: {len(filtered[filtered['channel']=='observation'])})"
+            )
 
         ranked = self._tier1_rank_and_cut(filtered)
-        print(f"  After rank & cut: {len(ranked)} stocks")
+        if verbose:
+            print(f"  After rank & cut: {len(ranked)} stocks")
 
         if tier1_only:
             return ranked
@@ -1124,7 +1140,8 @@ class TushareScreener:
             ranked = ranked.head(tier2_limit)
 
         total = len(ranked)
-        print(f"\n=== Tier 2: Deep analysis ({total} stocks) ===")
+        if verbose:
+            print(f"\n=== Tier 2: Deep analysis ({total} stocks) ===")
 
         results = []
         vetoed = {"pledge": 0, "audit": 0, "financial_quality": 0}
@@ -1134,15 +1151,18 @@ class TushareScreener:
             if progress_callback:
                 progress_callback(i + 1, total, ts_code)
             else:
-                print(f"  [{i+1}/{total}] {ts_code} {row.get('name', '')}...", end="")
+                if verbose:
+                    print(f"  [{i+1}/{total}] {ts_code} {row.get('name', '')}...", end="")
 
             stock_result = self._analyze_single_stock(row)
 
             if stock_result is None:
-                print(" VETOED")
+                if verbose:
+                    print(" VETOED")
             else:
                 results.append(stock_result)
-                print(" OK")
+                if verbose:
+                    print(" OK")
 
         if not results:
             return pd.DataFrame()
@@ -1152,7 +1172,8 @@ class TushareScreener:
         # Compute rankings
         result_df = self._compute_rankings(result_df)
 
-        print(f"\n=== Results: {len(result_df)} stocks passed ===")
+        if verbose:
+            print(f"\n=== Results: {len(result_df)} stocks passed ===")
         return result_df
 
     # ---- Export ----

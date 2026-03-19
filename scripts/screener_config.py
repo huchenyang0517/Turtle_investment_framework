@@ -85,6 +85,8 @@ class ScreenerConfig:
     cache_tier2_financial_ttl_hours: int = 168  # 7天，年报类数据
     cache_tier2_market_ttl_hours: int = 24      # 1天，周线行情
     cache_tier2_global_ttl_hours: int = 24      # 1天，yc_cb 无风险利率
+    # --- API pacing (avoid hitting Tushare minute limits) ---
+    api_sleep_seconds: float = 0.5  # 每次 API 调用之间的最小等待（秒）
 
     @property
     def tier2_max_stocks(self) -> int:
