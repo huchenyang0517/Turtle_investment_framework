@@ -24,10 +24,19 @@ import numpy as np
 import pandas as pd
 import tushare as ts
 from matplotlib import pyplot as plt
+import warnings
 
 from config import get_token
 from screener_config import ScreenerConfig
 from screener_core import TushareScreener
+
+# Silence tushare FutureWarning caused by pandas deprecations.
+# It is usually non-fatal and we only suppress this specific message.
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message="Series\\.fillna with 'method' is deprecated.*",
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -539,6 +548,46 @@ def main() -> None:
     w0 = 1.0 / len(valid_codes0)
     holdings_qty = {c: (portfolio_value_prev * w0) / float(prices.at[ts_day0, c]) for c in valid_codes0}
 
+    # --- Per-stock interval P/L tracking ---
+    # We treat each rebalance event as closing old intervals and opening new ones,
+    # so each stock may have multiple intervals throughout the backtest.
+    interval_open: Dict[str, Dict[str, object]] = {}
+    interval_records: List[Dict[str, object]] = []
+
+    def _close_interval(stock: str, end_date: dt.date, exit_price: float) -> None:
+        info = interval_open.get(stock)
+        if not info:
+            return
+        start_date = info["start_date"]  # type: ignore[assignment]
+        start_price = float(info["start_price"])  # type: ignore[arg-type]
+        shares = float(info["shares"])  # type: ignore[arg-type]
+        cost = shares * start_price
+        profit = shares * (exit_price - start_price)
+        ret_pct = (profit / cost * 100.0) if cost > 0 else np.nan
+
+        interval_records.append(
+            {
+                "ts_code": stock,
+                "name": name_by_code.get(stock, ""),
+                "start_date": start_date.isoformat() if hasattr(start_date, "isoformat") else str(start_date),
+                "end_date": end_date.isoformat(),
+                "start_price": start_price,
+                "end_price": exit_price,
+                "shares": shares,
+                "profit_amount": profit,
+                "return(%)": ret_pct,
+            }
+        )
+        interval_open.pop(stock, None)
+
+    # open intervals at initial rebalance
+    for c in valid_codes0:
+        interval_open[c] = {
+            "start_date": sim_start,
+            "start_price": float(prices.at[ts_day0, c]),
+            "shares": float(holdings_qty[c]),
+        }
+
     if args.verbose_rebalance and printed_events < args.verbose_max_events:
         printed_events += 1
         print(f"[REBALANCE] {sim_start} INIT: portfolio_value={portfolio_value_prev:.2f} top_k={len(target_codes0)} valid={len(valid_codes0)}")
@@ -555,6 +604,19 @@ def main() -> None:
 
         # rebalance events (skip sim_start since already done)
         if day in event_map and day != sim_start:
+            # compute current portfolio value at today's close using old holdings
+            v_today_old = 0.0
+            row_prices_all_old = {}
+            for c_old, qty_old in holdings_qty.items():
+                if c_old not in prices.columns:
+                    continue
+                p_old = prices.at[ts_day, c_old] if ts_day in prices.index else np.nan
+                if pd.isna(p_old):
+                    continue
+                p_old = float(p_old)
+                row_prices_all_old[c_old] = p_old
+                v_today_old += p_old * float(qty_old)
+
             topk_df = event_map[day]
             target_codes = topk_df["ts_code"].astype(str).tolist()
             row_prices = prices.loc[ts_day, target_codes].replace([np.inf, -np.inf], np.nan)
@@ -570,7 +632,23 @@ def main() -> None:
 
             if valid_codes:
                 w = 1.0 / len(valid_codes)
-                holdings_qty = {c: (portfolio_value_prev * w) / float(row_prices.get(c)) for c in valid_codes}
+                # close old intervals for all currently held stocks at today's close
+                for c_old, p_exit in row_prices_all_old.items():
+                    if c_old in interval_open:
+                        _close_interval(c_old, day, float(p_exit))
+
+                base_value = v_today_old if v_today_old > 0 else portfolio_value_prev
+                holdings_qty_new = {c: (base_value * w) / float(row_prices.get(c)) for c in valid_codes}
+                holdings_qty = holdings_qty_new
+
+                # open new intervals for new holdings at today's close
+                for c_new in valid_codes:
+                    p_entry = float(row_prices.get(c_new))
+                    interval_open[c_new] = {
+                        "start_date": day,
+                        "start_price": p_entry,
+                        "shares": float(holdings_qty_new[c_new]),
+                    }
 
                 if args.verbose_rebalance and printed_events < args.verbose_max_events:
                     printed_events += 1
@@ -599,6 +677,102 @@ def main() -> None:
 
         portfolio_value_series.append(v)
         portfolio_value_prev = v
+
+    # close remaining intervals at final day close
+    last_day = trade_days[-1]
+    last_ts = pd.to_datetime(last_day)
+    for c_open in list(interval_open.keys()):
+        if c_open not in prices.columns:
+            continue
+        p_exit = prices.at[last_ts, c_open] if last_ts in prices.index else np.nan
+        if pd.isna(p_exit) or float(p_exit) <= 0:
+            continue
+        _close_interval(c_open, last_day, float(p_exit))
+
+    # export per-stock P/L
+    if interval_records:
+        intervals_df = pd.DataFrame(interval_records)
+        # aggregate by stock
+        agg = (
+            intervals_df.groupby("ts_code", as_index=False)
+            .agg(
+                name=("name", "first"),
+                profit_amount=("profit_amount", "sum"),
+                cost_amount=("profit_amount", lambda s: np.nan),  # placeholder
+            )
+        )
+        # compute cost_amount separately for return(%) aggregation
+        intervals_df["cost_amount"] = intervals_df["shares"] * intervals_df["start_price"]
+        agg2 = (
+            intervals_df.groupby("ts_code", as_index=False)
+            .agg(
+                name=("name", "first"),
+                profit_amount=("profit_amount", "sum"),
+                cost_amount=("cost_amount", "sum"),
+                first_date=("start_date", "min"),
+                last_date=("end_date", "max"),
+                n_intervals=("start_date", "count"),
+            )
+        )
+        agg2["return(%)"] = np.where(
+            agg2["cost_amount"] > 0,
+            agg2["profit_amount"] / agg2["cost_amount"] * 100.0,
+            np.nan,
+        )
+        # periods string
+        periods = (
+            intervals_df.sort_values(["ts_code", "start_date", "end_date"])
+            .groupby("ts_code")["start_date"]
+        )
+        periods_str = (
+            intervals_df.sort_values(["ts_code", "start_date", "end_date"])
+            .groupby("ts_code")
+            .apply(lambda g: ";".join([f"{s}~{e}" for s, e in zip(g["start_date"], g["end_date"])]))
+        )
+        agg2["periods"] = agg2["ts_code"].map(periods_str)
+        agg2 = agg2.sort_values("profit_amount", ascending=False)
+
+        out_dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "output",
+        )
+        os.makedirs(out_dir, exist_ok=True)
+        intervals_path = os.path.join(out_dir, "rebalance_composite_monthly_stock_interval_pl.csv")
+        stock_pl_path = os.path.join(out_dir, "rebalance_composite_monthly_stock_pl_sorted.csv")
+
+        intervals_export = intervals_df.rename(
+            columns={
+                "ts_code": "股票代码",
+                "name": "股票名称",
+                "start_date": "开始日期",
+                "end_date": "结束日期",
+                "start_price": "起始收盘价",
+                "end_price": "结束收盘价",
+                "shares": "股数",
+                "profit_amount": "区间收益(元)",
+                "return(%)": "区间收益率(%)",
+                "cost_amount": "成本金额(元)",
+            }
+        )
+        intervals_export.to_csv(intervals_path, index=False, encoding="utf-8-sig")
+
+        agg2_export = agg2.rename(
+            columns={
+                "ts_code": "股票代码",
+                "name": "股票名称",
+                "profit_amount": "累计收益(元)",
+                "cost_amount": "成本金额(元)",
+                "first_date": "首次持有开始日期",
+                "last_date": "最后持有结束日期",
+                "n_intervals": "持有区间数",
+                "return(%)": "累计收益率(%)",
+                "periods": "持有区间(列表)",
+            }
+        )
+        agg2_export.to_csv(stock_pl_path, index=False, encoding="utf-8-sig")
+        print(f"[INFO] per-stock interval P/L exported:")
+        print(f"- intervals: {intervals_path}")
+        print(f"- sorted: {stock_pl_path}")
 
     equity = pd.DataFrame(
         {"date": pd.to_datetime(trade_days), "portfolio_value": portfolio_value_series}
