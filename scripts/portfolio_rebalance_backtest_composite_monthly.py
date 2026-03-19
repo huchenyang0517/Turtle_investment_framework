@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Monthly rebalance backtest using final composite_score (Tier1+Tier2).
+"""Rebalance backtest using final composite_score (Tier1+Tier2).
 
 策略：
 1) 每个“月末交易日”运行龟龟选股器（Tier1+Tier2），按最终 composite_score 取 TopK（默认 10）
@@ -41,7 +41,13 @@ warnings.filterwarnings(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Monthly rebalance backtest using composite_score (Tier1+Tier2)."
+        description="Rebalance backtest using composite_score (Tier1+Tier2)."
+    )
+    parser.add_argument(
+        "--rebalance-freq",
+        choices=["monthly", "weekly", "daily"],
+        default="monthly",
+        help="Evaluation frequency: 'monthly' = month-end; 'weekly' = week-end (Friday); 'daily' = every trading day.",
     )
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--initial-capital", type=float, default=1_000_000.0)
@@ -73,7 +79,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--min-call-interval",
         type=float,
-        default=0.5,
+        default=0.3,
         help="Min seconds between price/index API calls made by this script (not inside screener).",
     )
     parser.add_argument(
@@ -101,8 +107,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--api-sleep-seconds",
         type=float,
-        default=0.5,
-        help="Screener 内部每次 API 调用之间的最小等待（秒）。过小可能触发限频，过大耗时更久。",
+        default=0.3,
+        help="Screener 内部每次 API 调用之间的最小等待（秒）。过小可能触发限频，过大耗时更久。(200次/分钟限制下最优值=0.3)",
     )
     parser.add_argument(
         "--max-months",
@@ -191,6 +197,47 @@ def _month_end_trade_days(
     month_ends = cal.groupby("ym", as_index=False).apply(lambda g: g.iloc[-1])
     month_ends = month_ends.sort_values("cal_date")
     return [d.date() for d in month_ends["cal_date"]]
+
+
+def _week_end_trade_days(
+    pro: ts.pro_api,
+    exchange: str,
+    start_date: dt.date,
+    end_date: dt.date,
+) -> List[dt.date]:
+    cal = pro.trade_cal(
+        exchange=exchange,
+        start_date=_ymd(start_date),
+        end_date=_ymd(end_date),
+        fields="cal_date,is_open",
+    )
+    if cal is None or cal.empty:
+        return []
+    cal["cal_date"] = pd.to_datetime(cal["cal_date"])
+    cal = cal[cal["is_open"] == 1].sort_values("cal_date")
+    cal["yw"] = cal["cal_date"].dt.strftime("%G-%V")
+    week_ends = cal.groupby("yw", as_index=False).apply(lambda g: g.iloc[-1])
+    week_ends = week_ends.sort_values("cal_date")
+    return [d.date() for d in week_ends["cal_date"]]
+
+
+def _all_trade_days(
+    pro: ts.pro_api,
+    exchange: str,
+    start_date: dt.date,
+    end_date: dt.date,
+) -> List[dt.date]:
+    cal = pro.trade_cal(
+        exchange=exchange,
+        start_date=_ymd(start_date),
+        end_date=_ymd(end_date),
+        fields="cal_date,is_open",
+    )
+    if cal is None or cal.empty:
+        return []
+    cal["cal_date"] = pd.to_datetime(cal["cal_date"])
+    cal = cal[cal["is_open"] == 1].sort_values("cal_date")
+    return [d.date() for d in cal["cal_date"]]
 
 
 def _cache_path(cache_dir: str, suffix: str) -> str:
@@ -357,10 +404,18 @@ def main() -> None:
 
     rate_limiter = TushareRateLimiter(min_interval_seconds=args.min_call_interval)
 
-    # Build evaluation dates: month-end trading day
-    eval_days = _month_end_trade_days(pro, exchange="SSE", start_date=start_dt, end_date=end_dt)
+    freq = args.rebalance_freq  # "monthly" or "daily"
+    freq_tag = freq
+
+    if freq == "monthly":
+        eval_days = _month_end_trade_days(pro, exchange="SSE", start_date=start_dt, end_date=end_dt)
+    elif freq == "weekly":
+        eval_days = _week_end_trade_days(pro, exchange="SSE", start_date=start_dt, end_date=end_dt)
+    else:
+        eval_days = _all_trade_days(pro, exchange="SSE", start_date=start_dt, end_date=end_dt)
+
     if not eval_days:
-        raise RuntimeError("No month-end trade days found in range.")
+        raise RuntimeError("No evaluation trade days found in range.")
     if args.max_months and args.max_months > 0:
         eval_days = eval_days[: args.max_months]
 
@@ -378,7 +433,7 @@ def main() -> None:
 
     # Monthly topK cache
     cache_dir = args.cache_dir
-    topk_cache_dir = _cache_path(cache_dir, "monthly_topk")
+    topk_cache_dir = _cache_path(cache_dir, f"{freq_tag}_topk")
 
     prev_top_set: Optional[Set[str]] = None
     events: List[Tuple[dt.date, pd.DataFrame]] = []  # (event_day, topk_df)
@@ -737,8 +792,8 @@ def main() -> None:
             "output",
         )
         os.makedirs(out_dir, exist_ok=True)
-        intervals_path = os.path.join(out_dir, "rebalance_composite_monthly_stock_interval_pl.csv")
-        stock_pl_path = os.path.join(out_dir, "rebalance_composite_monthly_stock_pl_sorted.csv")
+        intervals_path = os.path.join(out_dir, f"rebalance_composite_{freq_tag}_stock_interval_pl.csv")
+        stock_pl_path = os.path.join(out_dir, f"rebalance_composite_{freq_tag}_stock_pl_sorted.csv")
 
         intervals_export = intervals_df.rename(
             columns={
@@ -874,7 +929,7 @@ def main() -> None:
 
     metrics_by_instrument_path = os.path.join(
         out_dir,
-        "rebalance_composite_monthly_metrics_by_instrument.csv",
+        f"rebalance_composite_{freq_tag}_metrics_by_instrument.csv",
     )
     pd.DataFrame(metrics_rows).to_csv(metrics_by_instrument_path, index=False, encoding="utf-8-sig")
 
@@ -886,7 +941,7 @@ def main() -> None:
             plt.plot(bench_df.index, (bench_df[col] / bench_df[col].iloc[0]).values, label=col)
     plt.legend()
     plt.grid(True, alpha=0.3)
-    plt.title("Monthly composite_score rebalance vs Benchmarks (Normalized NAV)")
+    plt.title(f"{freq_tag.capitalize()} composite_score rebalance vs Benchmarks (Normalized NAV)")
     plt.xlabel("Date")
     plt.ylabel("Normalized NAV (start=1.0)")
 
@@ -919,11 +974,11 @@ def main() -> None:
 
     os.makedirs(out_dir, exist_ok=True)
 
-    equity_path = os.path.join(out_dir, "rebalance_composite_monthly_equity_curve.csv")
-    events_path = os.path.join(out_dir, "rebalance_composite_monthly_events.csv")
-    summary_path = os.path.join(out_dir, "rebalance_composite_monthly_summary.csv")
-    fig_path = os.path.join(out_dir, "rebalance_composite_monthly_vs_benchmarks.png")
-    combined_path = os.path.join(out_dir, "rebalance_composite_monthly_vs_benchmarks.csv")
+    equity_path = os.path.join(out_dir, f"rebalance_composite_{freq_tag}_equity_curve.csv")
+    events_path = os.path.join(out_dir, f"rebalance_composite_{freq_tag}_events.csv")
+    summary_path = os.path.join(out_dir, f"rebalance_composite_{freq_tag}_summary.csv")
+    fig_path = os.path.join(out_dir, f"rebalance_composite_{freq_tag}_vs_benchmarks.png")
+    combined_path = os.path.join(out_dir, f"rebalance_composite_{freq_tag}_vs_benchmarks.csv")
 
     equity.to_csv(equity_path, encoding="utf-8-sig")
     summary.to_csv(summary_path, index=False, encoding="utf-8-sig")
