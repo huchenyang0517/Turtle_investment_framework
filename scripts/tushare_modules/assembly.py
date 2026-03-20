@@ -144,6 +144,12 @@ class AssemblyMixin:
                 else:
                     lines.append(format_header(2, name))
                     lines.append(f"\n数据获取失败: {e}\n")
+            # §6.1 分红承诺：占位符，由 Phase 1B Agent 通过 WebSearch 补充（公司公告中的分红承诺）
+            if name == "6. 分红历史":
+                lines.append(format_header(3, "6.1 分红承诺"))
+                lines.append("")
+                lines.append("*[§6.1 分红承诺 待Agent WebSearch补充]*")
+                lines.append("")
 
         # Audit info (sub-section of 7)
         try:

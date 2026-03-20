@@ -315,8 +315,8 @@ Task(
     若存在 → 优先使用其中的 MDA 字段
     若不存在 → 使用 WebSearch fallback 获取 MDA 摘要
 
-  注意：data_pack_market.md 中 §8, §10, §13.2 含占位符 `*[§N 待Agent WebSearch补充]*`。
-  使用 Edit 工具**替换**这些占位符为实际内容，而非在文件末尾追加。
+  注意：data_pack_market.md 中 §6.1, §8, §10, §13.2 含占位符 `*[§N 待Agent WebSearch补充]*`。
+  使用 Edit 工具**替换**这些占位符为实际内容，而非在文件末尾追加。§6.1 分红承诺需从公司公告（未来三年回报规划、业绩会等）中采集。
   §7 已有结构化数据（十大股东表+审计意见），在其后追加定性信息即可。
   """,
   description = "Phase1B WebSearch补充"

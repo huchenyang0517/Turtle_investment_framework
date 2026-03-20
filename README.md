@@ -148,6 +148,7 @@ export TUSHARE_TOKEN='your_token_here'
 | §4P | 母公司资产负债表 | balancesheet (report_type=4) |
 | §5 | 合并现金流量表 + FCF | cashflow |
 | §6 | 分红历史 | dividend |
+| §6.1 | 占位符（分红承诺） | Phase 1B（公司公告：未来三年回报规划、业绩会等） |
 | §7–§10 | 占位符（WebSearch 补充） | Phase 1B |
 | §11 | 周线数据（10 年） | weekly |
 | §12 | 财务指标（ROE/毛利率等） | fina_indicator |

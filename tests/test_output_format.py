@@ -81,7 +81,8 @@ class TestDataPackMarketSchema:
             assert section in self.result, f"Missing section: {section}"
 
     def test_agent_placeholder_sections(self):
-        """Agent-only sections (§8, §10) have placeholder markers."""
+        """Agent-only sections (§6.1, §8, §10) have placeholder markers."""
+        assert "§6.1" in self.result, "Missing §6.1 dividend commitment placeholder"
         assert "§8 待Agent WebSearch补充" in self.result
         assert "§10 待Agent WebSearch补充" in self.result
 
