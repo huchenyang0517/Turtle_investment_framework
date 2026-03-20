@@ -219,24 +219,24 @@ export TUSHARE_TOKEN='your_token_here'
 
 ```bash
 # 基本用法（默认：10 年、月末调仓、Top10、沪深 300 基准）
-.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite.py
 
 # 指定调仓频率
-.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --rebalance-freq quarterly   # 季末
-.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --rebalance-freq weekly      # 周末
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite.py --rebalance-freq quarterly   # 季末
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite.py --rebalance-freq weekly      # 周末
 
 # 自定义参数
-.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --top-k 20 --years 5
-.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --start-date 2015-01-01 --end-date 2024-12-31
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite.py --top-k 20 --years 5
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite.py --start-date 2015-01-01 --end-date 2024-12-31
 
 # 快速验证（限制 Tier2 数量 + 最多回测月数）
-.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --tier2-limit 50 --max-months 12
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite.py --tier2-limit 50 --max-months 12
 
 # 多基准对比
-.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --benchmarks "399300.SZ,000300.SH"
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite.py --benchmarks "399300.SZ,000300.SH"
 
 # 详细调仓日志
-.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --verbose-rebalance
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite.py --verbose-rebalance
 ```
 
 **输出文件**（位于 `output/` 目录；`--cache-dir` 仅用于 TopK 中间缓存）：
@@ -287,7 +287,7 @@ Turtle_investment_framework/
 │   ├── screener_config.py         # 选股器配置（ScreenerConfig dataclass）
 │   ├── screener_core.py           # 选股器核心（TushareScreener + CLI）
 │   ├── download_report.py         # 年报PDF下载（含重试、PDF验证）
-│   └── portfolio_rebalance_backtest_composite_monthly.py  # 组合回测（TopK 等权 vs 基准）
+│   └── portfolio_rebalance_backtest_composite.py  # 组合回测（TopK 等权 vs 基准）
 ├── prompts/                       # LLM 分析提示词
 │   ├── coordinator.md             # 协调器（多阶段调度中枢）
 │   ├── phase1_数据采集.md          # Phase 1A/1B 数据采集指令
