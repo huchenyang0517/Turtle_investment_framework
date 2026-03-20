@@ -12,6 +12,7 @@ AI 辅助的 A 股/港股基本面分析系统。混合架构：Python 脚本完
 | Phase 2B | 年报精提取 | Agent / 结构化提取 | 附注数据（5+1 项） |
 | Phase 3 | 四因子分析 | Agent / 渐进式分析 | 资产质量 → 穿透回报率 → 精算 → 估值 |
 | 选股器 | 龟龟选股器 | Python / 两级筛选 | Tier 1 批量过滤 + Tier 2 深度分析 |
+| 回测 | 组合回测 | Python / 月末调仓 | 基于 composite_score 的 TopK 等权组合 vs 基准 |
 
 ## 系统架构
 
@@ -204,6 +205,67 @@ export TUSHARE_TOKEN='your_token_here'
 .venv/bin/python scripts/screener_core.py --cache-tier2-refresh    # 仅刷新 Tier 2
 ```
 
+### 组合回测
+
+基于龟龟选股器的 composite_score，对 TopK 等权组合进行历史回测，并与基准指数对比净值曲线。
+
+**策略逻辑**：
+1. 每个「月末交易日」运行龟龟选股器（Tier1+Tier2），按 composite_score 取 TopK（默认 10）
+2. 若 TopK 股票集合相对上次月末发生变化，则在本月末收盘调仓到新的 TopK（等权、一次性全仓）
+3. 若集合未变化，则持有不动
+4. 与沪深 300（默认 399300.SZ）等基准进行净值曲线对比，输出可视化图表
+
+**重要提示**：Tier2 会对最多 200 只股票做深度分析，十年按月运行耗时较长。可用 `--tier2-limit` 缩小 Tier2 范围以加速（得到的是「近似 TopK」）。
+
+```bash
+# 基本用法（默认：10 年、月末调仓、Top10、沪深 300 基准）
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py
+
+# 指定调仓频率
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --rebalance-freq quarterly   # 季末
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --rebalance-freq weekly      # 周末
+
+# 自定义参数
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --top-k 20 --years 5
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --start-date 2015-01-01 --end-date 2024-12-31
+
+# 快速验证（限制 Tier2 数量 + 最多回测月数）
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --tier2-limit 50 --max-months 12
+
+# 多基准对比
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --benchmarks "399300.SZ,000300.SH"
+
+# 详细调仓日志
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite_monthly.py --verbose-rebalance
+```
+
+**输出文件**（位于 `output/` 目录；`--cache-dir` 仅用于 TopK 中间缓存）：
+
+| 文件 | 说明 |
+|------|------|
+| `rebalance_composite_monthly_equity_curve.csv` | 组合每日净值序列 |
+| `rebalance_composite_monthly_events.csv` | 每次调仓日期及 TopK 股票代码/名称 |
+| `rebalance_composite_monthly_summary.csv` | 组合与基准的 CAGR、MDD 等汇总指标 |
+| `rebalance_composite_monthly_vs_benchmarks.png` | 净值曲线对比图 |
+| `rebalance_composite_monthly_vs_benchmarks.csv` | 组合与基准归一化净值（便于自定义绘图） |
+| `rebalance_composite_monthly_metrics_by_instrument.csv` | 组合与各基准的 CAGR、简单年均收益、最大回撤（按标的汇总） |
+| `rebalance_composite_monthly_stock_interval_pl.csv` | 每只股票各持有区间的收益明细（有持仓时生成） |
+| `rebalance_composite_monthly_stock_pl_sorted.csv` | 每只股票累计收益排序（有持仓时生成） |
+
+**常用参数**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--rebalance-freq` | monthly | 调仓频率：quarterly / monthly / weekly / daily |
+| `--top-k` | 10 | 持仓股票数量 |
+| `--years` | 10 | 回测年数（近似） |
+| `--start-date` / `--end-date` | 自动推算 | 回测起止日期 |
+| `--tier2-limit` | 200 | Tier2 分析股票数量上限 |
+| `--max-months` | 0 | 仅用于快速验证：最多回测多少个月末（0=不限制） |
+| `--benchmarks` | 399300.SZ | 基准指数代码，逗号分隔 |
+| `--initial-capital` | 1000000 | 初始资金（元） |
+| `--adj` | hfq | 复权类型：qfq / hfq / none |
+
 ### Jupyter Notebook
 
 ```bash
@@ -224,7 +286,8 @@ Turtle_investment_framework/
 │   ├── pdf_preprocessor.py        # PDF 年报章节提取
 │   ├── screener_config.py         # 选股器配置（ScreenerConfig dataclass）
 │   ├── screener_core.py           # 选股器核心（TushareScreener + CLI）
-│   └── download_report.py         # 年报PDF下载（含重试、PDF验证）
+│   ├── download_report.py         # 年报PDF下载（含重试、PDF验证）
+│   └── portfolio_rebalance_backtest_composite_monthly.py  # 组合回测（TopK 等权 vs 基准）
 ├── prompts/                       # LLM 分析提示词
 │   ├── coordinator.md             # 协调器（多阶段调度中枢）
 │   ├── phase1_数据采集.md          # Phase 1A/1B 数据采集指令
