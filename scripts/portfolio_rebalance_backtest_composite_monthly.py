@@ -372,6 +372,34 @@ def _calc_max_drawdown(values: pd.Series) -> float:
     return float(dd.min())
 
 
+def _calc_max_drawdown_period(
+    values: pd.Series,
+) -> Tuple[float, Optional[object], Optional[object], Optional[object]]:
+    """Return (max_dd, peak_date, trough_date, recovery_date).
+
+    recovery_date is the first date NAV returns to the peak level, or None if
+    it never recovers within the series.
+    """
+    if values is None or len(values) < 2:
+        return np.nan, None, None, None
+    running_max = values.cummax()
+    dd = values / running_max - 1.0
+    trough_idx = dd.idxmin()
+    trough_dd = float(dd[trough_idx])
+
+    peak_val = running_max[trough_idx]
+    peak_candidates = values.loc[:trough_idx]
+    peak_idx = peak_candidates[peak_candidates == peak_val].index[0]
+
+    recovery_idx = None
+    after_trough = values.loc[trough_idx:]
+    recovered = after_trough[after_trough >= peak_val]
+    if len(recovered) > 0:
+        recovery_idx = recovered.index[0]
+
+    return trough_dd, peak_idx, trough_idx, recovery_idx
+
+
 def _calc_annualized_return(values: pd.Series) -> float:
     """CAGR from a NAV/price series."""
     if values is None or len(values) < 2:
@@ -957,17 +985,50 @@ def main() -> None:
     )
     pd.DataFrame(metrics_rows).to_csv(metrics_by_instrument_path, index=False, encoding="utf-8-sig")
 
-    # Visualization
-    plt.figure(figsize=(10, 6))
-    plt.plot(equity_norm.index, equity_norm.values, label="portfolio")
+    # Max-drawdown period calculation
+    port_mdd, port_peak, port_trough, port_recovery = _calc_max_drawdown_period(equity_nav)
+    bench_dd_periods: Dict[str, Tuple] = {}
     if not bench_df.empty:
         for col in bench_df.columns:
-            plt.plot(bench_df.index, (bench_df[col] / bench_df[col].iloc[0]).values, label=col)
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    plt.title(f"{freq_tag.capitalize()} composite_score rebalance vs Benchmarks (Normalized NAV)")
-    plt.xlabel("Date")
-    plt.ylabel("Normalized NAV (start=1.0)")
+            nav = bench_df[col] / bench_df[col].iloc[0]
+            bench_dd_periods[col] = _calc_max_drawdown_period(nav)
+
+    # Visualization
+    fig, ax = plt.subplots(figsize=(12, 7))
+    ax.plot(equity_norm.index, equity_norm.values, label="portfolio", linewidth=1.5)
+    if not bench_df.empty:
+        for col in bench_df.columns:
+            ax.plot(bench_df.index, (bench_df[col] / bench_df[col].iloc[0]).values, label=col, linewidth=1.0)
+
+    # Shade max-drawdown periods
+    dd_colors = {"portfolio": "red"}
+    bench_color_pool = ["blue", "green", "orange", "purple"]
+    for i, col in enumerate(bench_dd_periods):
+        dd_colors[col] = bench_color_pool[i % len(bench_color_pool)]
+
+    def _shade_drawdown(ax, peak, trough, recovery, color, label, dd_val):
+        if peak is None or trough is None:
+            return
+        shade_end = recovery if recovery is not None else equity_norm.index[-1]
+        ax.axvspan(peak, shade_end, alpha=0.10, color=color)
+        ax.axvline(peak, color=color, linestyle="--", linewidth=0.8, alpha=0.6)
+        ax.axvline(trough, color=color, linestyle=":", linewidth=0.8, alpha=0.6)
+        mid_x = peak + (trough - peak) / 2
+        y_top = ax.get_ylim()[1]
+        ax.annotate(
+            f"{label} MDD {dd_val*100:.1f}%\n{peak.strftime('%Y-%m-%d') if hasattr(peak,'strftime') else peak}"
+            f" ~ {trough.strftime('%Y-%m-%d') if hasattr(trough,'strftime') else trough}",
+            xy=(mid_x, y_top * 0.95), fontsize=7, color=color, ha="center", va="top",
+            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8, edgecolor=color, linewidth=0.5),
+        )
+
+    _shade_drawdown(ax, port_peak, port_trough, port_recovery, dd_colors["portfolio"], "Portfolio", port_mdd)
+
+    ax.legend(loc="upper left")
+    ax.grid(True, alpha=0.3)
+    ax.set_title(f"{freq_tag.capitalize()} composite_score rebalance vs Benchmarks (Normalized NAV)")
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Normalized NAV (start=1.0)")
 
     # Overlay metrics text
     def _fmt_pct(x: float) -> str:
@@ -975,26 +1036,38 @@ def main() -> None:
             return "N/A"
         return f"{x*100:.2f}%"
 
+    def _fmt_date(d) -> str:
+        if d is None:
+            return "N/A"
+        if hasattr(d, "strftime"):
+            return d.strftime("%Y-%m-%d")
+        return str(d)
+
     txt_lines = []
     txt_lines.append(
         f"Portfolio: CAGR={_fmt_pct(annual_return_cagr)}, "
         f"SimpleAvg={_fmt_pct(annual_return_simple_avg)}, "
-        f"MDD={max_dd*100:.2f}%"
+        f"MDD={max_dd*100:.2f}% "
+        f"({_fmt_date(port_peak)}~{_fmt_date(port_trough)}"
+        f"{', recovered '+_fmt_date(port_recovery) if port_recovery else ', not recovered'})"
     )
     if not bench_df.empty:
         for col in bench_df.columns:
             ann_cagr = bench_metrics[col]["annual_return_cagr"]
             ann_simple = bench_metrics[col]["annual_return_simple_avg"]
             mdd = bench_metrics[col]["max_drawdown"]
+            b_mdd_val, b_pk, b_tr, b_rec = bench_dd_periods[col]
             txt_lines.append(
                 f"{col}: CAGR={_fmt_pct(ann_cagr)}, "
                 f"SimpleAvg={_fmt_pct(ann_simple)}, "
-                f"MDD={mdd*100:.2f}%"
+                f"MDD={mdd*100:.2f}% "
+                f"({_fmt_date(b_pk)}~{_fmt_date(b_tr)}"
+                f"{', recovered '+_fmt_date(b_rec) if b_rec else ', not recovered'})"
             )
     txt = "\n".join(txt_lines)
-    plt.gca().text(0.01, 0.01, txt, transform=plt.gca().transAxes, fontsize=9, va="bottom",
-                   bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7, edgecolor="gray"))
-    plt.tight_layout()
+    ax.text(0.01, 0.01, txt, transform=ax.transAxes, fontsize=8, va="bottom",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8, edgecolor="gray"))
+    fig.tight_layout()
 
     os.makedirs(out_dir, exist_ok=True)
 
@@ -1021,8 +1094,8 @@ def main() -> None:
         )
     pd.DataFrame(rows).to_csv(events_path, index=False, encoding="utf-8-sig")
 
-    plt.savefig(fig_path, dpi=150)
-    plt.close()
+    fig.savefig(fig_path, dpi=150)
+    plt.close(fig)
 
     # Combined normalized export
     combined = pd.DataFrame({"portfolio": equity_norm})
