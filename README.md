@@ -210,8 +210,8 @@ export TUSHARE_TOKEN='your_token_here'
 基于龟龟选股器的 composite_score，对 TopK 等权组合进行历史回测，并与基准指数对比净值曲线。
 
 **策略逻辑**：
-1. 每个「月末交易日」运行龟龟选股器（Tier1+Tier2），按 composite_score 取 TopK（默认 10）
-2. 若 TopK 股票集合相对上次月末发生变化，则在本月末收盘调仓到新的 TopK（等权、一次性全仓）
+1. 每个调仓日（月末/季末/半年末/年末等，由 `--rebalance-freq` 决定）运行龟龟选股器（Tier1+Tier2），按 composite_score 取 TopK（默认 10）
+2. 若 TopK 股票集合相对上次调仓日发生变化，则在本调仓日收盘调仓到新的 TopK（等权、一次性全仓）
 3. 若集合未变化，则持有不动
 4. 与沪深 300（默认 399300.SZ）等基准进行净值曲线对比，输出可视化图表
 
@@ -222,6 +222,8 @@ export TUSHARE_TOKEN='your_token_here'
 .venv/bin/python scripts/portfolio_rebalance_backtest_composite.py
 
 # 指定调仓频率
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite.py --rebalance-freq annual       # 年末
+.venv/bin/python scripts/portfolio_rebalance_backtest_composite.py --rebalance-freq semi_annual # 半年末（6月/12月）
 .venv/bin/python scripts/portfolio_rebalance_backtest_composite.py --rebalance-freq quarterly   # 季末
 .venv/bin/python scripts/portfolio_rebalance_backtest_composite.py --rebalance-freq weekly      # 周末
 
@@ -239,24 +241,24 @@ export TUSHARE_TOKEN='your_token_here'
 .venv/bin/python scripts/portfolio_rebalance_backtest_composite.py --verbose-rebalance
 ```
 
-**输出文件**（位于 `output/` 目录；`--cache-dir` 仅用于 TopK 中间缓存）：
+**输出文件**（位于 `output/` 目录；`--cache-dir` 仅用于 TopK 中间缓存；文件名中的 `{freq}` 随 `--rebalance-freq` 变化，如 monthly/quarterly/semi_annual/annual）：
 
 | 文件 | 说明 |
 |------|------|
-| `rebalance_composite_monthly_equity_curve.csv` | 组合每日净值序列 |
-| `rebalance_composite_monthly_events.csv` | 每次调仓日期及 TopK 股票代码/名称 |
-| `rebalance_composite_monthly_summary.csv` | 组合与基准的 CAGR、MDD 等汇总指标 |
-| `rebalance_composite_monthly_vs_benchmarks.png` | 净值曲线对比图 |
-| `rebalance_composite_monthly_vs_benchmarks.csv` | 组合与基准归一化净值（便于自定义绘图） |
-| `rebalance_composite_monthly_metrics_by_instrument.csv` | 组合与各基准的 CAGR、简单年均收益、最大回撤（按标的汇总） |
-| `rebalance_composite_monthly_stock_interval_pl.csv` | 每只股票各持有区间的收益明细（有持仓时生成） |
-| `rebalance_composite_monthly_stock_pl_sorted.csv` | 每只股票累计收益排序（有持仓时生成） |
+| `rebalance_composite_{freq}_equity_curve.csv` | 组合每日净值序列 |
+| `rebalance_composite_{freq}_events.csv` | 每次调仓日期及 TopK 股票代码/名称 |
+| `rebalance_composite_{freq}_summary.csv` | 组合与基准的 CAGR、MDD 等汇总指标 |
+| `rebalance_composite_{freq}_vs_benchmarks.png` | 净值曲线对比图 |
+| `rebalance_composite_{freq}_vs_benchmarks.csv` | 组合与基准归一化净值（便于自定义绘图） |
+| `rebalance_composite_{freq}_metrics_by_instrument.csv` | 组合与各基准的 CAGR、简单年均收益、最大回撤（按标的汇总） |
+| `rebalance_composite_{freq}_stock_interval_pl.csv` | 每只股票各持有区间的收益明细（有持仓时生成） |
+| `rebalance_composite_{freq}_stock_pl_sorted.csv` | 每只股票累计收益排序（有持仓时生成） |
 
 **常用参数**：
 
 | 参数 | 默认值 | 说明 |
 |------|--------|------|
-| `--rebalance-freq` | monthly | 调仓频率：quarterly / monthly / weekly / daily |
+| `--rebalance-freq` | monthly | 调仓频率：annual / semi_annual / quarterly / monthly / weekly / daily |
 | `--top-k` | 10 | 持仓股票数量 |
 | `--years` | 10 | 回测年数（近似） |
 | `--start-date` / `--end-date` | 自动推算 | 回测起止日期 |

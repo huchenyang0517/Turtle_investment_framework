@@ -45,9 +45,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--rebalance-freq",
-        choices=["quarterly", "monthly", "weekly", "daily"],
+        choices=["annual", "semi_annual", "quarterly", "monthly", "weekly", "daily"],
         default="monthly",
-        help="Evaluation frequency: 'quarterly' = quarter-end; 'monthly' = month-end; 'weekly' = week-end; 'daily' = every trading day.",
+        help="Evaluation frequency: 'annual' = year-end; 'semi_annual' = half-year-end (Jun/Dec); 'quarterly' = quarter-end; 'monthly' = month-end; 'weekly' = week-end; 'daily' = every trading day.",
     )
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--initial-capital", type=float, default=1_000_000.0)
@@ -197,6 +197,54 @@ def _month_end_trade_days(
     month_ends = cal.groupby("ym", as_index=False).apply(lambda g: g.iloc[-1])
     month_ends = month_ends.sort_values("cal_date")
     return [d.date() for d in month_ends["cal_date"]]
+
+
+def _semi_annual_end_trade_days(
+    pro: ts.pro_api,
+    exchange: str,
+    start_date: dt.date,
+    end_date: dt.date,
+) -> List[dt.date]:
+    """Last trading day of each half-year (H1: Jan-Jun, H2: Jul-Dec)."""
+    cal = pro.trade_cal(
+        exchange=exchange,
+        start_date=_ymd(start_date),
+        end_date=_ymd(end_date),
+        fields="cal_date,is_open",
+    )
+    if cal is None or cal.empty:
+        return []
+    cal["cal_date"] = pd.to_datetime(cal["cal_date"])
+    cal = cal[cal["is_open"] == 1].sort_values("cal_date")
+    cal["half"] = cal["cal_date"].dt.year.astype(str) + "-" + np.where(
+        cal["cal_date"].dt.month <= 6, "H1", "H2"
+    )
+    half_ends = cal.groupby("half", as_index=False).apply(lambda g: g.iloc[-1])
+    half_ends = half_ends.sort_values("cal_date")
+    return [d.date() for d in half_ends["cal_date"]]
+
+
+def _annual_end_trade_days(
+    pro: ts.pro_api,
+    exchange: str,
+    start_date: dt.date,
+    end_date: dt.date,
+) -> List[dt.date]:
+    """Last trading day of each year."""
+    cal = pro.trade_cal(
+        exchange=exchange,
+        start_date=_ymd(start_date),
+        end_date=_ymd(end_date),
+        fields="cal_date,is_open",
+    )
+    if cal is None or cal.empty:
+        return []
+    cal["cal_date"] = pd.to_datetime(cal["cal_date"])
+    cal = cal[cal["is_open"] == 1].sort_values("cal_date")
+    cal["year"] = cal["cal_date"].dt.year.astype(str)
+    year_ends = cal.groupby("year", as_index=False).apply(lambda g: g.iloc[-1])
+    year_ends = year_ends.sort_values("cal_date")
+    return [d.date() for d in year_ends["cal_date"]]
 
 
 def _quarter_end_trade_days(
@@ -457,7 +505,11 @@ def main() -> None:
     freq = args.rebalance_freq  # "monthly" or "daily"
     freq_tag = freq
 
-    if freq == "quarterly":
+    if freq == "annual":
+        eval_days = _annual_end_trade_days(pro, exchange="SSE", start_date=start_dt, end_date=end_dt)
+    elif freq == "semi_annual":
+        eval_days = _semi_annual_end_trade_days(pro, exchange="SSE", start_date=start_dt, end_date=end_dt)
+    elif freq == "quarterly":
         eval_days = _quarter_end_trade_days(pro, exchange="SSE", start_date=start_dt, end_date=end_dt)
     elif freq == "monthly":
         eval_days = _month_end_trade_days(pro, exchange="SSE", start_date=start_dt, end_date=end_dt)
@@ -492,13 +544,13 @@ def main() -> None:
     name_by_code: Dict[str, str] = {}
 
     t0 = time.monotonic()
-    print(f"[INFO] Total month-ends to scan: {len(eval_days)}")
+    print(f"[INFO] Total rebalance dates to scan: {len(eval_days)}")
 
     for i, day in enumerate(eval_days):
         if args.progress_every > 0 and (i % args.progress_every == 0):
             elapsed = time.monotonic() - t0
             print(
-                f"[PROGRESS] {i+1}/{len(eval_days)} month_end={day} elapsed={elapsed/60:.1f}min events={len(events)}"
+                f"[PROGRESS] {i+1}/{len(eval_days)} date={day} elapsed={elapsed/60:.1f}min events={len(events)}"
             )
         trade_date_str = _ymd(day)
         cache_file = _cache_path(
