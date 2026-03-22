@@ -73,8 +73,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--cache-dir",
-        default="output/.composite_monthly_cache",
-        help="Local cache dir for monthly topK and price series.",
+        default="output/.backtest_cache",
+        help="Local cache dir for topK results and price series.",
     )
     parser.add_argument(
         "--min-call-interval",
@@ -194,7 +194,7 @@ def _month_end_trade_days(
     cal = cal[cal["is_open"] == 1].sort_values("cal_date")
     cal["ym"] = cal["cal_date"].dt.strftime("%Y-%m")
     # last open day each month
-    month_ends = cal.groupby("ym", as_index=False).apply(lambda g: g.iloc[-1])
+    month_ends = cal.groupby("ym").tail(1)
     month_ends = month_ends.sort_values("cal_date")
     return [d.date() for d in month_ends["cal_date"]]
 
@@ -219,7 +219,7 @@ def _semi_annual_end_trade_days(
     cal["half"] = cal["cal_date"].dt.year.astype(str) + "-" + np.where(
         cal["cal_date"].dt.month <= 6, "H1", "H2"
     )
-    half_ends = cal.groupby("half", as_index=False).apply(lambda g: g.iloc[-1])
+    half_ends = cal.groupby("half").tail(1)
     half_ends = half_ends.sort_values("cal_date")
     return [d.date() for d in half_ends["cal_date"]]
 
@@ -242,7 +242,7 @@ def _annual_end_trade_days(
     cal["cal_date"] = pd.to_datetime(cal["cal_date"])
     cal = cal[cal["is_open"] == 1].sort_values("cal_date")
     cal["year"] = cal["cal_date"].dt.year.astype(str)
-    year_ends = cal.groupby("year", as_index=False).apply(lambda g: g.iloc[-1])
+    year_ends = cal.groupby("year").tail(1)
     year_ends = year_ends.sort_values("cal_date")
     return [d.date() for d in year_ends["cal_date"]]
 
@@ -264,7 +264,7 @@ def _quarter_end_trade_days(
     cal["cal_date"] = pd.to_datetime(cal["cal_date"])
     cal = cal[cal["is_open"] == 1].sort_values("cal_date")
     cal["yq"] = cal["cal_date"].dt.to_period("Q").astype(str)
-    quarter_ends = cal.groupby("yq", as_index=False).apply(lambda g: g.iloc[-1])
+    quarter_ends = cal.groupby("yq").tail(1)
     quarter_ends = quarter_ends.sort_values("cal_date")
     return [d.date() for d in quarter_ends["cal_date"]]
 
@@ -286,7 +286,7 @@ def _week_end_trade_days(
     cal["cal_date"] = pd.to_datetime(cal["cal_date"])
     cal = cal[cal["is_open"] == 1].sort_values("cal_date")
     cal["yw"] = cal["cal_date"].dt.strftime("%G-%V")
-    week_ends = cal.groupby("yw", as_index=False).apply(lambda g: g.iloc[-1])
+    week_ends = cal.groupby("yw").tail(1)
     week_ends = week_ends.sort_values("cal_date")
     return [d.date() for d in week_ends["cal_date"]]
 
